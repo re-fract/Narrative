@@ -1,7 +1,9 @@
+import { Link } from 'react-router-dom'
 import BriefCard from '../components/BriefCard'
 
 const stories = [
   {
+    id: '1',
     category: 'Global Markets',
     timeAgo: '2 hours ago',
     headline:
@@ -14,6 +16,7 @@ const stories = [
     variant: 'featured' as const,
   },
   {
+    id: '2',
     category: 'Science',
     timeAgo: '4 hours ago',
     headline: 'Breakthrough in Solid-State Battery Density Announced',
@@ -24,6 +27,7 @@ const stories = [
     variant: 'secondary' as const,
   },
   {
+    id: '3',
     category: 'Politics',
     timeAgo: '6 hours ago',
     headline: 'Bipartisan Infrastructure Bill Passes Senate Committee',
@@ -34,6 +38,7 @@ const stories = [
     variant: 'tertiary' as const,
   },
   {
+    id: '4',
     category: 'Culture',
     timeAgo: '8 hours ago',
     headline:
@@ -45,6 +50,7 @@ const stories = [
     variant: 'tertiary' as const,
   },
   {
+    id: '5',
     category: 'Technology',
     timeAgo: '10 hours ago',
     headline:
@@ -55,7 +61,7 @@ const stories = [
     ],
     variant: 'tertiary' as const,
   },
-];
+]
 
 function HomePage() {
   const [featured, secondary, ...tertiary] = stories
@@ -74,34 +80,40 @@ function HomePage() {
       <div className="grid grid-cols-1 md:grid-cols-12 gap-gutter">
         {/* Featured */}
         <div className="md:col-span-8">
-          <BriefCard
-            category={featured.category}
-            timeAgo={featured.timeAgo}
-            headline={featured.headline}
-            bullets={featured.bullets}
-            variant="featured"
-          />
+          <Link to={`/article/${featured.id}`} className="block">
+            <BriefCard
+              category={featured.category}
+              timeAgo={featured.timeAgo}
+              headline={featured.headline}
+              bullets={featured.bullets}
+              variant="featured"
+            />
+          </Link>
         </div>
         {/* Secondary */}
         <div className="md:col-span-4">
-          <BriefCard
-            category={secondary.category}
-            timeAgo={secondary.timeAgo}
-            headline={secondary.headline}
-            bullets={secondary.bullets}
-            variant="secondary"
-          />
+          <Link to={`/article/${secondary.id}`} className="block">
+            <BriefCard
+              category={secondary.category}
+              timeAgo={secondary.timeAgo}
+              headline={secondary.headline}
+              bullets={secondary.bullets}
+              variant="secondary"
+            />
+          </Link>
         </div>
         {/* Tertiary */}
-        {tertiary.map((story, index) => (
-          <div key={index} className="md:col-span-4">
-            <BriefCard
-              category={story.category}
-              timeAgo={story.timeAgo}
-              headline={story.headline}
-              bullets={story.bullets}
-              variant="tertiary"
-            />
+        {tertiary.map((story) => (
+          <div key={story.id} className="md:col-span-4">
+            <Link to={`/article/${story.id}`} className="block">
+              <BriefCard
+                category={story.category}
+                timeAgo={story.timeAgo}
+                headline={story.headline}
+                bullets={story.bullets}
+                variant="tertiary"
+              />
+            </Link>
           </div>
         ))}
       </div>
