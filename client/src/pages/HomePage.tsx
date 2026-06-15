@@ -1,70 +1,55 @@
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import BriefCard from '../components/BriefCard'
 
-const stories = [
-  {
-    id: '1',
-    category: 'Global Markets',
-    timeAgo: '2 hours ago',
-    headline:
-      'Tech Stocks Rally Amidst Regulatory Clarity in European Markets',
-    bullets: [
-      'European regulators finalized the new framework for AI deployment, reducing uncertainty for major tech firms.',
-      'Equities in the sector saw a 4% average increase in early trading, led by semiconductor manufacturers.',
-      'Analysts predict sustained growth if upcoming US CPI data aligns with expectations next week.',
-    ],
-    variant: 'featured' as const,
-  },
-  {
-    id: '2',
-    category: 'Science',
-    timeAgo: '4 hours ago',
-    headline: 'Breakthrough in Solid-State Battery Density Announced',
-    bullets: [
-      'Researchers achieved a 30% increase in energy density without compromising safety.',
-      'Commercial applications for EVs expected by 2027.',
-    ],
-    variant: 'secondary' as const,
-  },
-  {
-    id: '3',
-    category: 'Politics',
-    timeAgo: '6 hours ago',
-    headline: 'Bipartisan Infrastructure Bill Passes Senate Committee',
-    bullets: [
-      'Focuses on grid modernization and broadband expansion.',
-      'Faces a tough floor vote expected late next month.',
-    ],
-    variant: 'tertiary' as const,
-  },
-  {
-    id: '4',
-    category: 'Culture',
-    timeAgo: '8 hours ago',
-    headline:
-      'The Resurgence of Minimalist Architecture in Urban Centers',
-    bullets: [
-      'New developments favor brutalist elements and natural light.',
-      'Shift driven by sustainability mandates and material costs.',
-    ],
-    variant: 'tertiary' as const,
-  },
-  {
-    id: '5',
-    category: 'Technology',
-    timeAgo: '10 hours ago',
-    headline:
-      'OpenAI Announces New Multimodal Model with Enhanced Reasoning',
-    bullets: [
-      'The model demonstrates significant improvements in complex problem-solving tasks.',
-      'Integration with existing developer APIs is planned for next quarter.',
-    ],
-    variant: 'tertiary' as const,
-  },
-]
+interface Story {
+  id: number
+  title: string
+  bullets: string[]
+  category: string
+  timeAgo: string
+}
+
+interface ApiResponse {
+  date: string
+  stories: Story[]
+}
 
 function HomePage() {
-  const [featured, secondary, ...tertiary] = stories
+  const [stories, setStories] = useState<Story[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const fetchStories = async () => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/briefs/today')
+      if (!res.ok) {
+        throw new Error('Failed to fetch stories')
+      }
+      const data: ApiResponse = await res.json()
+      setStories(data.stories)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchStories()
+  }, [])
+
+  const todayStr = new Date().toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  })
+
+  const featured = stories[0]
+  const secondary = stories[1]
 
   return (
     <div className="max-w-container-max mx-auto px-margin-mobile md:px-margin-desktop py-stack-lg">
@@ -73,50 +58,96 @@ function HomePage() {
           Good Morning, User
         </h1>
         <p className="font-label-caps text-label-caps text-on-surface-variant uppercase tracking-widest">
-          Thursday, October 24, 2024 · Your Curated Feed
+          {todayStr} · Your Curated Feed
         </p>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-gutter">
-        {/* Featured */}
-        <div className="md:col-span-8">
-          <Link to={`/article/${featured.id}`} className="block">
-            <BriefCard
-              category={featured.category}
-              timeAgo={featured.timeAgo}
-              headline={featured.headline}
-              bullets={featured.bullets}
-              variant="featured"
-            />
-          </Link>
+      {error && (
+        <div className="flex flex-col items-center justify-center py-20">
+          <p className="text-body-md text-on-surface-variant mb-4">{error}</p>
+          <button
+            onClick={fetchStories}
+            className="px-4 py-2 bg-primary text-white rounded hover:opacity-90 transition-opacity"
+          >
+            Retry
+          </button>
         </div>
-        {/* Secondary */}
-        <div className="md:col-span-4">
-          <Link to={`/article/${secondary.id}`} className="block">
-            <BriefCard
-              category={secondary.category}
-              timeAgo={secondary.timeAgo}
-              headline={secondary.headline}
-              bullets={secondary.bullets}
-              variant="secondary"
-            />
-          </Link>
-        </div>
-        {/* Tertiary */}
-        {tertiary.map((story) => (
-          <div key={story.id} className="md:col-span-4">
-            <Link to={`/article/${story.id}`} className="block">
-              <BriefCard
-                category={story.category}
-                timeAgo={story.timeAgo}
-                headline={story.headline}
-                bullets={story.bullets}
-                variant="tertiary"
-              />
-            </Link>
+      )}
+
+      {isLoading && (
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-gutter">
+          <div className="md:col-span-8">
+            <div className="rounded bg-surface-container-high animate-pulse h-96" />
           </div>
-        ))}
-      </div>
+          <div className="md:col-span-4">
+            <div className="rounded bg-surface-container-high animate-pulse h-96" />
+          </div>
+          <div className="md:col-span-4">
+            <div className="rounded bg-surface-container-high animate-pulse h-64" />
+          </div>
+          <div className="md:col-span-4">
+            <div className="rounded bg-surface-container-high animate-pulse h-64" />
+          </div>
+          <div className="md:col-span-4">
+            <div className="rounded bg-surface-container-high animate-pulse h-64" />
+          </div>
+        </div>
+      )}
+
+      {!isLoading && !error && stories.length === 0 && (
+        <div className="flex items-center justify-center py-20">
+          <p className="text-body-md text-on-surface-variant">
+            No stories today
+          </p>
+        </div>
+      )}
+
+      {!isLoading && !error && stories.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-gutter">
+          {/* Featured */}
+          {featured && (
+            <div className="md:col-span-8">
+              <Link to={`/article/${featured.id}`} className="block">
+                <BriefCard
+                  category={featured.category}
+                  timeAgo={featured.timeAgo}
+                  headline={featured.title}
+                  bullets={featured.bullets}
+                  variant="featured"
+                />
+              </Link>
+            </div>
+          )}
+          {/* Secondary */}
+          {secondary && (
+            <div className="md:col-span-4">
+              <Link to={`/article/${secondary.id}`} className="block">
+                <BriefCard
+                  category={secondary.category}
+                  timeAgo={secondary.timeAgo}
+                  headline={secondary.title}
+                  bullets={secondary.bullets}
+                  variant="secondary"
+                />
+              </Link>
+            </div>
+          )}
+          {/* Tertiary */}
+          {stories.slice(2).map((story) => (
+            <div key={story.id} className="md:col-span-4">
+              <Link to={`/article/${story.id}`} className="block">
+                <BriefCard
+                  category={story.category}
+                  timeAgo={story.timeAgo}
+                  headline={story.title}
+                  bullets={story.bullets}
+                  variant="tertiary"
+                />
+              </Link>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
