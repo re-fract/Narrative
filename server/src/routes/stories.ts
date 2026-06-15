@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../db/index.js';
-import genAI from '../services/geminiClient.js';
+import { generateNimSummary } from '../services/nimClient.js';
 
 const router = Router();
 
@@ -53,11 +53,6 @@ router.get('/:id/expand', async (req, res) => {
       return res.json({ expansion: story.expansion_json });
     }
 
-    // Need to generate
-    if (!genAI) {
-      return res.status(503).json({ error: 'AI service unavailable' });
-    }
-
     const articlesResult = await pool.query(
       'SELECT title, body FROM articles WHERE story_id = $1 ORDER BY published_at DESC',
       [id]
@@ -66,20 +61,9 @@ router.get('/:id/expand', async (req, res) => {
     const articles = articlesResult.rows;
     const combined = articles.map((a: { title: string; body: string | null }) => `${a.title}\n${a.body ?? ''}`).join('\n\n---\n\n');
 
-    const result = await genAI.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: 'Synthesize the following related news articles into a comprehensive long-form summary with these sections: Background & Context, Key Players, What Happened, Differing Perspectives, What to Watch Next. Be thorough but concise.' },
-            { text: combined },
-          ],
-        },
-      ],
-    });
-
-    const expansion = result.text ?? '';
+    const prompt = `Synthesize the following related news articles into a comprehensive long-form summary with these sections: Background & Context, Key Players, What Happened, Differing Perspectives, What to Watch Next.\nRules: each section must be 2-3 sentences max. Keep it concise.\n\n${combined}`;
+    const result = await generateNimSummary(prompt);
+    const expansion = result ?? '';
     const expansionJson = JSON.stringify({ text: expansion });
 
     await pool.query(
@@ -108,10 +92,6 @@ router.get('/:id/simplify', async (req, res) => {
       return res.json({ text: cached.rows[0].text });
     }
 
-    if (!genAI) {
-      return res.status(503).json({ error: 'AI service unavailable' });
-    }
-
     const storyResult = await pool.query('SELECT title, summary FROM stories WHERE id = $1', [id]);
     if (storyResult.rows.length === 0) {
       return res.status(404).json({ error: 'Story not found' });
@@ -119,23 +99,11 @@ router.get('/:id/simplify', async (req, res) => {
 
     const { title, summary } = storyResult.rows[0];
     const prompt = level === 'eli5'
-      ? 'Explain this news story as if to a 5-year-old. Use very simple words and short sentences:'
-      : 'Simplify this news story so an educated non-expert can understand it:';
+      ? 'Explain this news story as if to a 5-year-old. Use very simple words and short sentences.'
+      : 'Simplify this news story for a general reader.';
 
-    const result = await genAI.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: prompt },
-            { text: `${title}\n\n${summary}` },
-          ],
-        },
-      ],
-    });
-
-    const text = result.text ?? '';
+    const result = await generateNimSummary(`${prompt}\nRules: 3 short bullet points, each under 140 characters. No preamble.\n\n${title}\n\n${summary}`);
+    const text = result ?? '';
 
     await pool.query(
       `INSERT INTO simplifications (story_id, level, text) VALUES ($1, $2, $3)

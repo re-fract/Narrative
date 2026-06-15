@@ -1,10 +1,8 @@
 import { Router, Response } from 'express';
-import genAI from '../services/geminiClient.js';
+import { generateNimSummary } from '../services/nimClient.js';
 import { pool } from '../db/index.js';
 import { fetchAllFeeds } from '../services/rssFetcher.js';
 import { trackAPICall } from '../services/budgetTracker.js';
-import { averageVectors } from '../services/vectorUtils.js';
-import { summarizeSingle, synthesizeClusterSummary } from '../services/summarizer.js';
 import type { ArticleRow, StoryRow } from '../types/index.js';
 
 function parseBullets(summary: string): string[] {
@@ -18,12 +16,6 @@ function parseBullets(summary: string): string[] {
 
 const router = Router();
 
-const DEFAULT_SOURCES = [
-  { feedUrl: 'https://feeds.bbci.co.uk/news/rss.xml', id: 1, name: 'BBC News' },
-  { feedUrl: 'https://www.theguardian.com/world/rss', id: 2, name: 'The Guardian' },
-  { feedUrl: 'https://feeds.reuters.com/reuters/worldNews', id: 3, name: 'Reuters' },
-  { feedUrl: 'https://rss.cnn.com/rss/edition.rss', id: 4, name: 'CNN' },
-];
 
 function getTodayUTC(): string {
   return new Date().toISOString().split('T')[0];
@@ -76,25 +68,14 @@ async function getOrCreateBrief() {
   }
 
   // 2. No brief — generate
-  if (!genAI) {
-    throw new Error('Gemini API key not configured');
-  }
+  let aiState = { available: true };
 
   // Fetch feeds
-  const rawArticles = await fetchAllFeeds(DEFAULT_SOURCES);
+  const rawArticles = await fetchAllFeeds();
+  rawArticles.splice(15);
 
   if (rawArticles.length === 0) {
     return { date: today, stories: [] };
-  }
-
-  // Insert sources if not exist
-  for (const s of DEFAULT_SOURCES) {
-    await pool.query(
-      `INSERT INTO sources (id, name, feed_url, is_active)
-       VALUES ($1, $2, $3, true)
-       ON CONFLICT (feed_url) DO NOTHING`,
-      [s.id, s.name, s.feedUrl]
-    );
   }
 
   // Insert articles into DB
@@ -105,101 +86,45 @@ async function getOrCreateBrief() {
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (url) DO UPDATE SET title = EXCLUDED.title, body = EXCLUDED.body
        RETURNING id`,
-      [a.sourceId, a.url, a.title, a.body, a.publishedAt]
+      [a.sourceId, a.url, a.title, stripHtml(a.body), a.publishedAt]
     );
     articleIds.push(res.rows[0].id);
   }
 
-  // Batch embed
-  const texts = rawArticles.map((a) => `${a.title}. ${a.body}`);
-  const embedResp = await genAI.models.embedContent({
-    model: 'text-embedding-004',
-    contents: texts.map((t) => ({ parts: [{ text: t }] })),
-  });
-  await trackAPICall();
-
-  const embeddings = (embedResp.embeddings ?? []).map((e: { values?: number[] }) => e.values ?? []);
-
-  // Get active stories from last 7 days
-  const activeStories = await pool.query<StoryRow>(
-    `SELECT * FROM stories
-     WHERE last_updated_at > NOW() - INTERVAL '7 days'
-     AND status = 'active'`
-  );
-
-  // Cluster articles
-  const storyCentroids = new Map<number, number[][]>(); // story_id -> array of embeddings
-  const newArticleClusters: number[][][] = [];
-  const newArticleIds: number[][] = [];
-
-  for (let i = 0; i < rawArticles.length; i++) {
-    const embedding = embeddings[i];
-    const articleId = articleIds[i];
-    let matched = false;
-
-    for (const story of activeStories.rows) {
-      if (!story.centroid) continue;
-      const sim = cosineSimilarity(embedding, story.centroid);
-      if (sim > 0.82) {
-        const existing = storyCentroids.get(story.id) || [];
-        existing.push(embedding);
-        storyCentroids.set(story.id, existing);
-        await pool.query('UPDATE articles SET story_id = $1 WHERE id = $2', [story.id, articleId]);
-        matched = true;
-        break;
-      }
-    }
-
-    if (!matched) {
-      newArticleClusters.push([embedding]);
-      newArticleIds.push([articleId]);
-    }
-  }
-
-  // Summarize each story
+  // Create one story per article (no clustering)
   const storyIdsForBrief: number[] = [];
 
-  // Process existing stories
-  for (const [storyId] of storyCentroids) {
-    const members = await pool.query<ArticleRow>(
-      'SELECT * FROM articles WHERE story_id = $1 ORDER BY published_at DESC',
-      [storyId]
-    );
-    const summary = await buildSummary(members.rows, genAI);
-    const newCentroid = averageVectors(storyCentroids.get(storyId) ?? []);
-    await pool.query(
-      `UPDATE stories
-       SET title = $1, summary = $2, centroid = $3, article_count = article_count + $4, last_updated_at = NOW()
-       WHERE id = $5`,
-      [summary.title, summary.text, JSON.stringify(newCentroid), members.rows.length, storyId]
-    );
-    storyIdsForBrief.push(storyId);
-  }
+  for (let i = 0; i < rawArticles.length; i++) {
+    const articleId = articleIds[i];
 
-  // Process new stories (clusters)
-  for (let i = 0; i < newArticleClusters.length; i++) {
-    const clusterIds = newArticleIds[i];
-    if (clusterIds.length === 0) continue;
-
-    const members = await pool.query<ArticleRow>(
-      'SELECT * FROM articles WHERE id = ANY($1)',
-      [clusterIds]
-    );
-    const summary = await buildSummary(members.rows, genAI);
-    const centroid = averageVectors(newArticleClusters[i]);
-
+    // Create a new story for this article
     const storyRes = await pool.query<{ id: number }>(
-      `INSERT INTO stories (title, summary, centroid, article_count, status, first_seen_at, last_updated_at)
-       VALUES ($1, $2, $3, $4, 'active', NOW(), NOW())
+      `INSERT INTO stories (title, summary, article_count, status, first_seen_at, last_updated_at)
+       VALUES ($1, $2, $3, 'active', NOW(), NOW())
        RETURNING id`,
-      [summary.title, summary.text, JSON.stringify(centroid), members.rows.length]
+      ['Untitled', '', 1]
     );
-    const newStoryId = storyRes.rows[0].id;
+    const storyId = storyRes.rows[0].id;
+    storyIdsForBrief.push(storyId);
+
+    // Link article to its story
     await pool.query(
-      'UPDATE articles SET story_id = $1 WHERE id = ANY($2)',
-      [newStoryId, clusterIds]
+      'UPDATE articles SET story_id = $1 WHERE id = $2',
+      [storyId, articleId]
     );
-    storyIdsForBrief.push(newStoryId);
+
+    // Build summary for this single-article story
+    const members = await pool.query<ArticleRow>(
+      'SELECT * FROM articles WHERE id = $1',
+      [articleId]
+    );
+    const summary = await buildSummary(members.rows, aiState);
+
+    // Update the story with the generated summary
+    await pool.query(
+      'UPDATE stories SET title = $1, summary = $2 WHERE id = $3',
+      [summary.title, summary.text, storyId]
+    );
   }
 
   // Store brief
@@ -244,75 +169,99 @@ async function getOrCreateBrief() {
   };
 }
 
-async function buildSummary(articles: ArticleRow[], genAI: NonNullable<typeof import('../services/geminiClient.js').default>) {
+function stripHtml(input: string): string {
+  return input.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function generateFallbackSummary(article: ArticleRow): { title: string; text: string } {
+  const title = article.title ?? 'Untitled';
+  const body = stripHtml(article.body ?? '');
+  const sentences = body.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(s => s.length > 0);
+  const bullets: string[] = [];
+  for (let i = 0; i < Math.min(2, sentences.length); i++) {
+    let s = sentences[i].slice(0, 140);
+    if (sentences[i].length > 140) s += '...';
+    bullets.push(`• ${s}`);
+  }
+  if (sentences.length > 2) {
+    bullets.push('• ...');
+  }
+  return { title, text: bullets.join('\n') };
+}
+
+async function buildSummary(
+  articles: ArticleRow[],
+  aiState: { available: boolean },
+) {
   if (articles.length === 1) {
-    const text = `${articles[0].title}. ${articles[0].body?.slice(0, 3000) ?? ''}`;
-    const result = await genAI.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: 'Summarize the following article in exactly 3 concise bullet points (one line each). Return only the bullet points, no preamble:' },
-            { text },
-          ],
-        },
-      ],
-    });
-    const summaryText = result.text ?? '';
-    const title = summaryText.split('\n')[0].replace(/^[•\-\*]\s*/, '').slice(0, 500);
-    return { title, text: summaryText };
+    const article = articles[0];
+
+    if (aiState.available) {
+      const promptText = `Summarize the following article in exactly 3 concise bullet points.\nRules:\n- Each bullet must be one sentence only (under 140 characters).\n- Do not add any preamble, explanation, or labels.\n- Return ONLY the bullet points.\n\n${article.title}. ${article.body}`;
+      const result = await generateNimSummary(promptText);
+
+      if (result) {
+        const summaryText = result;
+        const title = summaryText.split('\n')[0].replace(/^[•\-\*]\s*/, '').slice(0, 500);
+        return { title, text: summaryText };
+      }
+
+      aiState.available = false;
+    }
+
+    return generateFallbackSummary(article);
   }
 
   // Map-reduce for multi-article stories
   const perArticle: string[] = [];
+
+  if (aiState.available) {
+    for (const a of articles) {
+      const promptText = `Summarize this article in 2-3 sentences:\n\n${a.title}. ${a.body}`;
+      const result = await generateNimSummary(promptText);
+
+      if (result) {
+        perArticle.push(result);
+        await trackAPICall();
+      } else {
+        aiState.available = false;
+        break;
+      }
+    }
+  }
+
+  if (aiState.available && perArticle.length === articles.length) {
+    const combined = perArticle.join('\n\n');
+    const promptText = `You are given summaries of related news articles. Synthesize them into exactly 3 concise bullet points.\nRules:\n- Each bullet must be one sentence only (under 140 characters).\n- Do not add any preamble, explanation, or labels.\n- Return ONLY the bullet points.\n\n${combined}`;
+    const result = await generateNimSummary(promptText);
+
+    if (result) {
+      const summaryText = result;
+      const title = summaryText.split('\n')[0].replace(/^[•\-\*]\s*/, '').slice(0, 500);
+      return { title, text: summaryText };
+    }
+
+    aiState.available = false;
+  }
+
+  // Multi-article fallback
+  const title = articles[0].title ?? 'Untitled';
+  const bullets: string[] = [];
   for (const a of articles) {
-    const text = `${a.title}. ${a.body?.slice(0, 3000) ?? ''}`;
-    const result = await genAI.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: 'Summarize this article in 2-3 sentences:' },
-            { text },
-          ],
-        },
-      ],
-    });
-    perArticle.push(result.text ?? '');
-    await trackAPICall();
+    const body = a.body ?? '';
+    const sentences = body
+      .split(/(?<=[.!?])\s+/)
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+    if (sentences.length > 0) bullets.push(`• ${sentences[0]}`);
+    if (sentences.length > 1) bullets.push(`• ${sentences[1]}`);
   }
 
-  const combined = perArticle.join('\n\n');
-  const result = await genAI.models.generateContent({
-    model: 'gemini-2.0-flash',
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { text: 'You are given summaries of related news articles. Synthesize them into exactly 3 concise bullet points that capture the key facts and angles. Return only the bullet points, no preamble.' },
-          { text: combined },
-        ],
-      },
-    ],
-  });
-  const summaryText = result.text ?? '';
-  const title = summaryText.split('\n')[0].replace(/^[•\-\*]\s*/, '').slice(0, 500);
-  return { title, text: summaryText };
-}
+  const text = bullets.length > 0
+    ? bullets.join('\n')
+    : `• ${articles[0].body?.slice(0, 200) ?? 'No content'}`;
 
-function cosineSimilarity(a: number[], b: number[]): number {
-  let dot = 0;
-  let magA = 0;
-  let magB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    magA += a[i] * a[i];
-    magB += b[i] * b[i];
-  }
-  if (magA === 0 || magB === 0) return 0;
-  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+  return { title, text };
 }
 
 // GET /api/briefs/today
@@ -323,6 +272,18 @@ router.get('/today', async (req, res: Response) => {
   } catch (err) {
     console.error('Brief error:', err);
     res.status(500).json({ error: 'Failed to generate brief' });
+  }
+});
+
+// DELETE /api/briefs/today
+router.delete('/today', async (req, res: Response) => {
+  try {
+    const today = getTodayUTC();
+    await pool.query('DELETE FROM briefs WHERE brief_date = $1', [today]);
+    res.json({ cleared: true });
+  } catch (err) {
+    console.error('Brief clear error:', err);
+    res.status(500).json({ cleared: false, error: 'Failed to clear brief' });
   }
 });
 
