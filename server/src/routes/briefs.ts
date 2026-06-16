@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { generateNimSummary } from '../services/nimClient.js';
 import { pool } from '../db/index.js';
 import { fetchAllFeeds } from '../services/rssFetcher.js';
+import { fetchArticleText } from '../services/articleScraper.js';
 import { trackAPICall } from '../services/budgetTracker.js';
 import type { ArticleRow, StoryRow } from '../types/index.js';
 
@@ -91,13 +92,28 @@ async function getOrCreateBrief() {
     articleIds.push(res.rows[0].id);
   }
 
+  // Fetch full text for articles in parallel
+  await Promise.all(
+    rawArticles.map(async (a) => {
+      try {
+        const text = await fetchArticleText(a.url);
+        if (text) {
+          await pool.query('UPDATE articles SET full_text = $1 WHERE url = $2', [text, a.url]);
+        }
+      } catch (err) {
+        console.warn('Failed to fetch full text for', a.url, err);
+      }
+    })
+  );
+
   // Create one story per article (no clustering)
+  // Step 1: Create all stories and link articles (fast DB ops, can stay sequential)
   const storyIdsForBrief: number[] = [];
+  const articleStoryPairs: { storyId: number; articleId: number }[] = [];
 
   for (let i = 0; i < rawArticles.length; i++) {
     const articleId = articleIds[i];
 
-    // Create a new story for this article
     const storyRes = await pool.query<{ id: number }>(
       `INSERT INTO stories (title, summary, article_count, status, first_seen_at, last_updated_at)
        VALUES ($1, $2, $3, 'active', NOW(), NOW())
@@ -107,25 +123,37 @@ async function getOrCreateBrief() {
     const storyId = storyRes.rows[0].id;
     storyIdsForBrief.push(storyId);
 
-    // Link article to its story
     await pool.query(
       'UPDATE articles SET story_id = $1 WHERE id = $2',
       [storyId, articleId]
     );
 
-    // Build summary for this single-article story
-    const members = await pool.query<ArticleRow>(
-      'SELECT * FROM articles WHERE id = $1',
-      [articleId]
-    );
-    const summary = await buildSummary(members.rows, aiState);
-
-    // Update the story with the generated summary
-    await pool.query(
-      'UPDATE stories SET title = $1, summary = $2 WHERE id = $3',
-      [summary.title, summary.text, storyId]
-    );
+    articleStoryPairs.push({ storyId, articleId });
   }
+
+  // Step 2: Generate all summaries in parallel with stagger (slow NIM calls)
+  await Promise.all(
+    articleStoryPairs.map(async ({ storyId, articleId }, index) => {
+      // Stagger starts by 500ms per article to avoid rate-limiting NIM
+      await new Promise(resolve => setTimeout(resolve, index * 500));
+
+      try {
+        const members = await pool.query<ArticleRow>(
+          'SELECT * FROM articles WHERE id = $1',
+          [articleId]
+        );
+        // Each article gets its own aiState so failures are independent
+        const summary = await buildSummary(members.rows, { available: true });
+
+        await pool.query(
+          'UPDATE stories SET title = $1, summary = $2 WHERE id = $3',
+          [summary.title, summary.text, storyId]
+        );
+      } catch (err) {
+        console.error(`Failed to build summary for story ${storyId}:`, err);
+      }
+    })
+  );
 
   // Store brief
   await pool.query(
@@ -197,7 +225,8 @@ async function buildSummary(
     const article = articles[0];
 
     if (aiState.available) {
-      const promptText = `Summarize the following article in exactly 3 concise bullet points.\nRules:\n- Each bullet must be one sentence only (under 140 characters).\n- Do not add any preamble, explanation, or labels.\n- Return ONLY the bullet points.\n\n${article.title}. ${article.body}`;
+      const articleText = article.full_text || article.body || '';
+      const promptText = `Summarize the following article in exactly 3 concise bullet points.\nRules:\n- Each bullet must be one sentence only (under 140 characters).\n- Do not add any preamble, explanation, or labels.\n- Return ONLY the bullet points.\n\n${article.title}. ${articleText}`;
       const result = await generateNimSummary(promptText);
 
       if (result) {
@@ -217,7 +246,8 @@ async function buildSummary(
 
   if (aiState.available) {
     for (const a of articles) {
-      const promptText = `Summarize this article in 2-3 sentences:\n\n${a.title}. ${a.body}`;
+      const articleText = a.full_text || a.body || '';
+      const promptText = `Summarize this article in 2-3 sentences:\n\n${a.title}. ${articleText}`;
       const result = await generateNimSummary(promptText);
 
       if (result) {

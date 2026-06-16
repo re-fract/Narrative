@@ -29,6 +29,8 @@ export interface ArticleItem {
   id: number
   title: string
   url: string
+  body: string
+  full_text: string | null
   published_at: string
   source_name: string
 }

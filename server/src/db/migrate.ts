@@ -11,6 +11,21 @@ export async function migrate(): Promise<void> {
     const schemaPath = path.join(__dirname, 'schema.sql');
     const sql = fs.readFileSync(schemaPath, 'utf-8');
     await pool.query(sql);
+
+    const migrationsDir = path.join(__dirname, 'migrations');
+    if (fs.existsSync(migrationsDir)) {
+      const files = fs.readdirSync(migrationsDir)
+        .filter((f: string) => f.endsWith('.sql'))
+        .sort();
+
+      for (const file of files) {
+        const migrationPath = path.join(migrationsDir, file);
+        const migrationSql = fs.readFileSync(migrationPath, 'utf-8');
+        await pool.query(migrationSql);
+        console.log(`Migration applied: ${file}`);
+      }
+    }
+
     console.log('Database migrated successfully');
   } catch (err) {
     // pg does not throw for IF NOT EXISTS, but catch anything else

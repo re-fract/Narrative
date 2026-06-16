@@ -74,6 +74,10 @@ function extractDescription(item: Record<string, unknown>): string {
     raw = item.summary;
   } else if (typeof item.content === 'string') {
     raw = item.content;
+  } else if (typeof item['content:encoded'] === 'string') {
+    raw = item['content:encoded'];
+  } else if (typeof item['dc:description'] === 'string') {
+    raw = item['dc:description'];
   }
   return stripHtml(raw);
 }

@@ -2,14 +2,17 @@ import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { getStory, getStorySimplify } from '../api/client'
 import type { StoryResponse } from '../api/client'
+import SimplifyToggle, { type SimplifyMode } from '../components/SimplifyToggle'
 
 function ArticleViewPage() {
   const { id } = useParams<{ id: string }>()
   const [data, setData] = useState<StoryResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [simplifyOn, setSimplifyOn] = useState(false)
-  const [simplifiedText, setSimplifiedText] = useState<string | null>(null)
+  const [mode, setMode] = useState<SimplifyMode>('original')
+  const [simplifyCache, setSimplifyCache] = useState<Record<string, string>>({})
+  const [simplifyLoading, setSimplifyLoading] = useState(false)
+  const [simplifyError, setSimplifyError] = useState<string | null>(null)
   const [chatInput, setChatInput] = useState('')
 
   const story = data?.story
@@ -38,15 +41,28 @@ function ArticleViewPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
-  const handleSimplifyToggle = async (next: boolean) => {
-    setSimplifyOn(next)
-    if (next && simplifiedText === null && id) {
-      try {
-        const res = await getStorySimplify(Number(id), 'simple')
-        setSimplifiedText(res.text)
-      } catch {
-        // silently fail — simplified text not available
-      }
+  const handleModeChange = async (nextMode: SimplifyMode) => {
+    setMode(nextMode)
+
+    if (nextMode === 'original') {
+      setSimplifyError(null)
+      return
+    }
+
+    if (simplifyCache['simple'] || !id) {
+      setSimplifyError(null)
+      return
+    }
+
+    setSimplifyLoading(true)
+    setSimplifyError(null)
+    try {
+      const res = await getStorySimplify(Number(id), 'simple')
+      setSimplifyCache((prev) => ({ ...prev, simple: res.text }))
+    } catch {
+      setSimplifyError('Failed to load simplified version')
+    } finally {
+      setSimplifyLoading(false)
     }
   }
 
@@ -57,6 +73,8 @@ function ArticleViewPage() {
         year: 'numeric',
       }).toUpperCase()
     : ''
+
+  const displayText = mode === 'original' ? null : simplifyCache['simple'] ?? null
 
   return (
     <div className="flex-grow flex w-full relative">
@@ -96,34 +114,7 @@ function ArticleViewPage() {
                 <span className="w-1 h-1 bg-outline-variant rounded-full"></span>
                 <span>{storyDate}</span>
               </div>
-              <div
-                className="flex items-center gap-3 group cursor-pointer"
-                onClick={() => handleSimplifyToggle(!simplifyOn)}
-              >
-                <span className="font-label-md text-label-md text-primary transition-colors group-hover:text-secondary">
-                  Simplify
-                </span>
-                <button
-                  aria-checked={simplifyOn}
-                  role="switch"
-                  className={`simplify-toggle relative inline-flex h-5 w-10 items-center rounded-full border border-outline-variant transition-colors focus:outline-none ${
-                    simplifyOn ? 'bg-secondary border-secondary' : 'bg-surface'
-                  }`}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleSimplifyToggle(!simplifyOn)
-                  }}
-                >
-                  <span
-                    className={`toggle-thumb inline-block h-3 w-3 rounded-full transition-transform duration-200 ease-in-out ${
-                      simplifyOn ? 'translate-x-1 bg-on-primary' : 'translate-x-1 bg-primary'
-                    }`}
-                    style={{
-                      transform: simplifyOn ? 'translateX(1.25rem)' : 'translateX(0.25rem)',
-                    }}
-                  ></span>
-                </button>
-              </div>
+              <SimplifyToggle mode={mode} onChange={handleModeChange} />
             </div>
 
             {/* Headline + Subheadline */}
@@ -166,68 +157,57 @@ function ArticleViewPage() {
             </figure>
 
             {/* Article Body */}
-            {simplifyOn && simplifiedText ? (
-              <div className="font-body text-body-lg text-on-surface flex flex-col gap-6 leading-relaxed">
-                <p>{simplifiedText}</p>
+            {mode !== 'original' && simplifyError && (
+              <div className="font-body text-body-lg text-on-surface flex flex-col gap-4 leading-relaxed">
+                <p className="text-error">{simplifyError}</p>
               </div>
-            ) : (
+            )}
+            {mode !== 'original' && simplifyLoading && (
               <div className="font-body text-body-lg text-on-surface flex flex-col gap-6 leading-relaxed">
-                <p>{story.summary}</p>
-
-                <h2 className="font-display text-headline-md text-primary mt-4 pt-4 border-t border-outline-variant">
-                  The Efficiency Paradox
-                </h2>
-                <p>
-                  The architecture of global trade is undergoing a quiet, brutalist redesign. For decades, the flow of goods
-                  relied on a sprawling network of human intuition, historical relationships, and localized buffers. Today, that
-                  entire paradigm is being overwritten by predictive algorithms engineered to shave milliseconds and
-                  micrometers off physical supply routes.
-                </p>
-                <p>
-                  Leading the charge is a consortium of multinational manufacturers who have deployed what they term
-                  &ldquo;Autonomous Fulfillment Networks&rdquo; (AFNs). These systems do not merely track inventory; they
-                  preemptively route raw materials based on real-time geofencing, weather patterns, and localized economic
-                  indicators.
-                </p>
-
-                <h2 className="font-display text-headline-md text-primary mt-4 pt-4 border-t border-outline-variant">
-                  Systemic Fragility
-                </h2>
-                <p>
-                  However, this hyper-optimization comes with a fragile underbelly. By eliminating the slack in the system—the
-                  extra warehouse space, the redundant suppliers—the network becomes highly susceptible to cascading failures.
-                  A single miscalculation by the predictive model regarding a minor port strike can now paralyze production
-                  lines across three continents simultaneously.
-                </p>
-
-                {/* Quote Block */}
-                <blockquote className="my-stack-md pl-gutter border-l-2 border-primary py-2 bg-surface-container-low">
-                  <p className="font-display text-headline-sm text-primary mb-2">
-                    &ldquo;We are building supply chains out of glass. They are flawlessly transparent, incredibly efficient,
-                    and highly prone to shattering if struck at the right angle.&rdquo;
-                  </p>
-                  <footer className="font-label-caps text-label-caps text-on-surface-variant">
-                    — Dr. Aris Thorne, Director of Logistics Analysis, Geneva.
-                  </footer>
-                </blockquote>
-
-                <p>
-                  As regulatory bodies scramble to understand the implications of non-human entities dictating the flow of
-                  essential goods, the market has already cast its vote. Shares in companies providing the underlying machine
-                  learning infrastructure for AFNs surged an average of 14% in early trading. The era of the automated harbor
-                  has arrived, whether global infrastructure is ready for it or not.
-                </p>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-secondary border-t-transparent"></span>
+                  <span className="font-body-md text-on-surface-variant">Loading simplified version...</span>
+                </div>
+                <div className="animate-pulse bg-surface-container h-4 w-full rounded"></div>
+                <div className="animate-pulse bg-surface-container h-4 w-full rounded"></div>
+                <div className="animate-pulse bg-surface-container h-4 w-5/6 rounded"></div>
+              </div>
+            )}
+            {mode !== 'original' && displayText ? (
+              <div className="font-body text-body-lg text-on-surface flex flex-col gap-6 leading-relaxed">
+                <p>{displayText}</p>
+              </div>
+            ) : null}
+            {(mode === 'original' || simplifyError) && (
+              <div className="font-body text-body-lg text-on-surface flex flex-col gap-6 leading-relaxed">
+                {articles.map((article) => (
+                  <div key={article.id}>
+                    {/* Show article title if multiple articles */}
+                    {articles.length > 1 && (
+                      <h2 className="font-display text-headline-md text-primary mt-4 pt-4 border-t border-outline-variant">
+                        {article.title}
+                      </h2>
+                    )}
+                    {/* Article body: prefer full_text, fallback to RSS snippet */}
+                    <p className="whitespace-pre-wrap">{article.full_text || article.body || 'Original article content unavailable.'}</p>
+                  </div>
+                ))}
               </div>
             )}
 
             {/* Footer Actions */}
             <div className="pt-section-gap pb-stack-lg border-t border-outline-variant flex flex-col sm:flex-row gap-4 items-center justify-between">
               <div className="font-caption text-caption text-on-surface-variant">
-                Originally published by The Financial Courier.
+                {articles.map(a => a.source_name).filter(Boolean).join(', ')}
               </div>
-              <button className="px-6 py-3 border border-primary text-primary font-label-md text-label-md hover:bg-surface-container-low transition-colors duration-200">
+              <a
+                href={articles[0]?.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-6 py-3 border border-primary text-primary font-label-md text-label-md hover:bg-surface-container-low transition-colors duration-200"
+              >
                 Read Original Source
-              </button>
+              </a>
             </div>
           </article>
         )}

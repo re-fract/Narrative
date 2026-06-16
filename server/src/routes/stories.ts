@@ -17,13 +17,14 @@ router.get('/:id', async (req, res) => {
     }
 
     const articlesResult = await pool.query(
-      `SELECT a.id, a.title, a.url, a.published_at, s.name as source_name
+      `SELECT a.id, a.title, a.url, a.body, a.full_text, a.published_at, s.name as source_name
        FROM articles a
        JOIN sources s ON a.source_id = s.id
        WHERE a.story_id = $1
        ORDER BY a.published_at DESC`,
       [id]
     );
+    console.log(`Story ${id} articles:`, articlesResult.rows.map(a => ({ id: a.id, title: a.title, bodyLength: a.body?.length, fullTextLength: a.full_text?.length, bodyPreview: a.body?.substring(0, 100) })));
 
     res.json({
       story: storyResult.rows[0],
@@ -54,12 +55,12 @@ router.get('/:id/expand', async (req, res) => {
     }
 
     const articlesResult = await pool.query(
-      'SELECT title, body FROM articles WHERE story_id = $1 ORDER BY published_at DESC',
+      'SELECT title, body, full_text FROM articles WHERE story_id = $1 ORDER BY published_at DESC',
       [id]
     );
 
     const articles = articlesResult.rows;
-    const combined = articles.map((a: { title: string; body: string | null }) => `${a.title}\n${a.body ?? ''}`).join('\n\n---\n\n');
+    const combined = articles.map((a: { title: string; body: string | null; full_text: string | null }) => `${a.title}\n${a.full_text ?? a.body ?? ''}`).join('\n\n---\n\n');
 
     const prompt = `Synthesize the following related news articles into a comprehensive long-form summary with these sections: Background & Context, Key Players, What Happened, Differing Perspectives, What to Watch Next.\nRules: each section must be 2-3 sentences max. Keep it concise.\n\n${combined}`;
     const result = await generateNimSummary(prompt);
@@ -98,11 +99,19 @@ router.get('/:id/simplify', async (req, res) => {
     }
 
     const { title, summary } = storyResult.rows[0];
-    const prompt = level === 'eli5'
-      ? 'Explain this news story as if to a 5-year-old. Use very simple words and short sentences.'
-      : 'Simplify this news story for a general reader.';
 
-    const result = await generateNimSummary(`${prompt}\nRules: 3 short bullet points, each under 140 characters. No preamble.\n\n${title}\n\n${summary}`);
+    const prompt = `Simplify this news story for a general reader.
+
+Rules:
+- Write 2-3 concise paragraphs in essay format (NOT bullet points).
+- Cover the key facts, context, and why it matters.
+- Use plain language but don't oversimplify — this is for the full article view, not a headline overview.
+- Aim for about 120-180 words. Do NOT go below 100 words.
+- No preamble, labels, or meta-text.
+
+`;
+
+    const result = await generateNimSummary(`${prompt}${title}\n\n${summary}`);
     const text = result ?? '';
 
     await pool.query(

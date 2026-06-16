@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS stories (
 );
 
 -- Individual articles ingested from feeds
+-- body = RSS description snippet; full_text = scraped article content
 CREATE TABLE IF NOT EXISTS articles (
     id              SERIAL PRIMARY KEY,
     story_id        INTEGER REFERENCES stories(id),
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS articles (
     url             VARCHAR(1000) NOT NULL UNIQUE,
     title           VARCHAR(500) NOT NULL,
     body            TEXT,
+    full_text       TEXT,
     embedding       JSONB,
     published_at    TIMESTAMP,
     fetched_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP

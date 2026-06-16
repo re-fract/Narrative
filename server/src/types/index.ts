@@ -19,6 +19,7 @@ export interface ArticleRow {
   url: string;
   title: string;
   body: string | null;
+  full_text?: string | null;
   embedding: number[] | null;
   published_at: Date | null;
   fetched_at: Date;
