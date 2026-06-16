@@ -1,14 +1,3 @@
-# --- App-specific ---
-# Design mockups
-stitch_design_stuff/
-
-# Claude project files
-.claude/
-
-# Architecture docs (not needed to run)
-ARCHITECTURE.md
-CLAUDE.md
-
 # --- Node.js / JavaScript ---
 # Dependencies
 node_modules/
