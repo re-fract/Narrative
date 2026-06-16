@@ -24,6 +24,18 @@ router.get('/:id', async (req, res) => {
        ORDER BY a.published_at DESC`,
       [id]
     );
+    // Diagnostic: also fetch raw articles without the JOIN to detect source_id issues
+    const rawArticlesDiag = await pool.query(
+      `SELECT id, url, title, body, full_text, story_id, source_id, published_at FROM articles WHERE story_id = $1 ORDER BY published_at DESC`,
+      [id]
+    );
+    console.log(`[STORY ${id}] Articles with JOIN: ${articlesResult.rows.length}, raw (no join): ${rawArticlesDiag.rows.length}`);
+    if (rawArticlesDiag.rows.length > 0 && articlesResult.rows.length === 0) {
+      console.log(`[STORY ${id}] JOIN dropped ALL articles — check source_id validity:`, rawArticlesDiag.rows.map(r => ({ id: r.id, source_id: r.source_id, url: r.url })));
+    }
+    if (rawArticlesDiag.rows.length === 0) {
+      console.log(`[STORY ${id}] CRITICAL: No articles found with story_id=${id} at all. This story is orphaned.`);
+    }
     console.log(`Story ${id} articles:`, articlesResult.rows.map(a => ({ id: a.id, title: a.title, bodyLength: a.body?.length, fullTextLength: a.full_text?.length, bodyPreview: a.body?.substring(0, 100) })));
 
     res.json({
