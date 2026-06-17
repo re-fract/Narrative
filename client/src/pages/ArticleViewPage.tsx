@@ -4,6 +4,102 @@ import { getStory, getStorySimplify } from '../api/client'
 import type { StoryResponse } from '../api/client'
 import SimplifyToggle, { type SimplifyMode } from '../components/SimplifyToggle'
 
+interface ParsedArticleBodyProps {
+  text: string
+  source?: string
+  publishedAt?: string
+}
+
+function isBylineBlock(text: string, source?: string, publishedAt?: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.length > 150) return false
+
+  // "By Author Name" pattern
+  if (/^by\s+\w+/i.test(trimmed)) return true
+  // Starts with author bullets like "BBC News Ireland" or contains role/title
+  if (/reporter|correspondent|editor|analyst|writer|staff writer/i.test(trimmed) && trimmed.length < 150) return true
+  // Contains the source name (e.g. "BBC News") and is short
+  if (source && new RegExp(source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(trimmed)) return true
+
+  // Matches a time ago string: "2 hours ago", "6 June 2025"
+  if (/\d+\s+(hour|minute|day|week|month|year)s?\s+ago/i.test(trimmed)) return true
+  if (/\d{1,2}\s+(january|february|march|april|may|june|july|august|september|october|november|december)/i.test(trimmed)) return true
+
+  return false
+}
+
+function stripLeadingBylines(text: string, source?: string, publishedAt?: string): string {
+  if (!text) return text
+  const blocks = text.split(/\n\n+/).filter((b) => b.trim().length > 0)
+  const cleaned: string[] = []
+  let skipped = 0
+  const maxSkip = 4
+
+  for (const block of blocks) {
+    if (skipped >= maxSkip) {
+      cleaned.push(block)
+      continue
+    }
+    if (isBylineBlock(block, source, publishedAt)) {
+      skipped++
+      continue
+    }
+    cleaned.push(block)
+  }
+
+  return cleaned.join('\n\n')
+}
+
+function ParsedArticleBody({ text, source, publishedAt }: ParsedArticleBodyProps) {
+  if (!text) return <p className="text-on-surface-variant">Article content unavailable.</p>
+
+  const cleanText = stripLeadingBylines(text, source, publishedAt)
+  const blocks = cleanText.split(/\n\n+/).filter((b) => b.trim().length > 0)
+
+  return (
+    <div className="flex flex-col gap-6">
+      {blocks.map((block, index) => {
+        const trimmed = block.trim()
+
+        // Heading marker from articleScraper.ts
+        if (trimmed.startsWith('###HEADING:###')) {
+          const headingText = trimmed.replace('###HEADING:###', '').trim()
+          return (
+            <h2
+              key={index}
+              className="font-sans text-xl font-extrabold text-on-surface mt-4 mb-2 leading-snug tracking-tight"
+            >
+              {headingText}
+            </h2>
+          )
+        }
+
+        // First paragraph (lead / stand-first) gets larger, lighter text
+        if (index === 0) {
+          return (
+            <p
+              key={index}
+              className="text-lg leading-relaxed text-on-surface-variant/90 font-serif"
+            >
+              {trimmed}
+            </p>
+          )
+        }
+
+        // Standard paragraph
+        return (
+          <p
+            key={index}
+            className="text-lg leading-[1.72] text-on-surface font-serif"
+          >
+            {trimmed}
+          </p>
+        )
+      })}
+    </div>
+  )
+}
+
 function ArticleViewPage() {
   const { id } = useParams<{ id: string }>()
   const [data, setData] = useState<StoryResponse | null>(null)
@@ -117,14 +213,24 @@ function ArticleViewPage() {
               <SimplifyToggle mode={mode} onChange={handleModeChange} />
             </div>
 
-            {/* Headline + Subheadline */}
-            <header className="flex flex-col gap-stack-sm">
-              <h1 className="font-display text-display-lg-mobile md:text-display-lg text-primary">
+            {/* Headline + Byline */}
+            <header className="flex flex-col gap-2">
+              <h1 className="font-display text-4xl md:text-5xl lg:text-6xl font-black leading-tight text-primary">
                 {story.title}
               </h1>
-              <p className="font-body-lg text-body-lg text-on-surface-variant italic">
-                {story.summary}
-              </p>
+              <div className="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant">
+                <time dateTime={story.first_seen_at}>
+                  {new Date(story.first_seen_at).toLocaleDateString('en-GB', {
+                    day: 'numeric',
+                    month: 'long',
+                    year: 'numeric',
+                  })}{' '}
+                  {new Date(story.first_seen_at).toLocaleTimeString('en-GB', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </time>
+              </div>
             </header>
 
             {/* Articles list below summary */}
@@ -174,22 +280,18 @@ function ArticleViewPage() {
               </div>
             )}
             {mode !== 'original' && displayText ? (
-              <div className="font-body text-body-lg text-on-surface flex flex-col gap-6 leading-relaxed">
-                <p>{displayText}</p>
-              </div>
+              <ParsedArticleBody text={displayText} />
             ) : null}
             {(mode === 'original' || simplifyError) && (
               <div className="font-body text-body-lg text-on-surface flex flex-col gap-6 leading-relaxed">
                 {articles.map((article) => (
                   <div key={article.id}>
-                    {/* Show article title if multiple articles */}
                     {articles.length > 1 && (
                       <h2 className="font-display text-headline-md text-primary mt-4 pt-4 border-t border-outline-variant">
                         {article.title}
                       </h2>
                     )}
-                    {/* Article body: prefer full_text, fallback to RSS snippet */}
-                    <p className="whitespace-pre-wrap">{article.full_text || article.body || 'Original article content unavailable.'}</p>
+                    <ParsedArticleBody text={article.full_text || article.body || 'Original article content unavailable.'} source={article.source_name} publishedAt={article.published_at} />
                   </div>
                 ))}
               </div>
