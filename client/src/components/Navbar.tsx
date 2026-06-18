@@ -25,7 +25,7 @@ function Navbar() {
             to="/"
             className="font-display text-[48px] leading-[1.1] font-bold text-primary"
           >
-            The Brief
+            Narrative
           </NavLink>
 
           {/* Desktop Navigation */}

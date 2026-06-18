@@ -3,7 +3,6 @@ import { generateNimSummary } from '../services/nimClient.js';
 import { pool } from '../db/index.js';
 import { fetchAllFeeds } from '../services/rssFetcher.js';
 import { fetchArticleText } from '../services/articleScraper.js';
-import { trackAPICall } from '../services/budgetTracker.js';
 import type { ArticleRow, StoryRow } from '../types/index.js';
 
 function parseBullets(summary: string): string[] {
@@ -320,7 +319,6 @@ async function buildSummary(
 
       if (result) {
         perArticle.push(result);
-        await trackAPICall();
       } else {
         aiState.available = false;
         break;

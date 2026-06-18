@@ -248,20 +248,6 @@ function ArticleViewPage() {
               ))}
             </div>
 
-            {/* Hero Image Placeholder */}
-            <figure className="w-full relative border border-outline-variant p-1 bg-surface-container-lowest">
-              <div className="w-full aspect-[16/9] overflow-hidden bg-surface-container">
-                <div className="w-full h-full bg-surface-dim flex items-center justify-center">
-                  <span className="material-symbols-outlined text-6xl text-on-surface-variant opacity-20">
-                    image
-                  </span>
-                </div>
-              </div>
-              <figcaption className="mt-2 font-caption text-caption text-on-surface-variant text-right px-2">
-                Automated terminals in Rotterdam reflect the industry&apos;s shift toward absolute precision. (Photo: Agency)
-              </figcaption>
-            </figure>
-
             {/* Article Body */}
             {mode !== 'original' && simplifyError && (
               <div className="font-body text-body-lg text-on-surface flex flex-col gap-4 leading-relaxed">
