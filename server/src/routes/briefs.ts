@@ -3,6 +3,8 @@ import { generateNimSummary } from '../services/nimClient.js';
 import { pool } from '../db/index.js';
 import { fetchAllFeeds } from '../services/rssFetcher.js';
 import { fetchArticleText } from '../services/articleScraper.js';
+import { generateEmbedding } from '../services/geminiClient.js';
+import { cosineSimilarity, averageVectors } from '../services/vectorUtils.js';
 import type { ArticleRow, StoryRow } from '../types/index.js';
 
 function parseBullets(summary: string): string[] {
@@ -100,123 +102,142 @@ async function getOrCreateBrief() {
     }
 
     // === GENERATION (same as before) ===
-  let aiState = { available: true };
+    let aiState = { available: true };
 
-  // Fetch feeds
-  const rawArticles = await fetchAllFeeds();
-  rawArticles.splice(15);
+    // Fetch feeds
+    const rawArticles = await fetchAllFeeds();
 
-  if (rawArticles.length === 0) {
-    return { date: today, stories: [] };
-  }
-
-  // Insert articles into DB
-  const articleIds: number[] = [];
-  console.log(`[BRIEF] Inserting ${rawArticles.length} articles into DB...`);
-  for (const a of rawArticles) {
-    const res = await pool.query(
-      `INSERT INTO articles (source_id, url, title, body, published_at)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (url) DO UPDATE SET title = EXCLUDED.title, body = EXCLUDED.body
-       RETURNING id, story_id, source_id`,
-      [a.sourceId, a.url, a.title, stripHtml(a.body), a.publishedAt]
-    );
-    if (!res.rows?.[0]?.id) {
-      console.error(`[BRIEF FAIL] Insert returned no ID for article URL=${a.url}, rowCount=${res.rowCount}`);
-      continue;
+    if (rawArticles.length === 0) {
+      return { date: today, stories: [] };
     }
-    articleIds.push(res.rows[0].id);
-    console.log(`[BRIEF ARTICLE] Inserted/updated: id=${res.rows[0].id}, url="${a.url}", sourceId=${res.rows[0].source_id}, prevStoryId=${res.rows[0].story_id}`);
-  }
-  console.log(`[BRIEF] articleIds collected: [${articleIds.join(', ')}] (count:${articleIds.length})`);
 
-  // Fetch full text for articles in parallel
-  await Promise.all(
-    rawArticles.map(async (a) => {
+    // Insert articles into DB and generate embeddings
+    console.log(`[BRIEF] Processing ${rawArticles.length} articles...`);
+    const insertedArticles: (ArticleRow & { embedding: number[] })[] = [];
+
+    for (const a of rawArticles) {
       try {
-        const text = await fetchArticleText(a.url);
-        if (text) {
-          await pool.query('UPDATE articles SET full_text = $1 WHERE url = $2', [text, a.url]);
+        // Get embedding based on title and snippet
+        const combinedText = a.title + '\n' + stripHtml(a.body);
+        const embedding = await generateEmbedding(combinedText);
+        
+        const res = await pool.query(
+          `INSERT INTO articles (source_id, url, title, body, published_at, embedding)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (url) DO UPDATE SET title = EXCLUDED.title, body = EXCLUDED.body, embedding = EXCLUDED.embedding
+           RETURNING id, story_id, source_id, url, title, body, full_text, published_at`,
+          [a.sourceId, a.url, a.title, stripHtml(a.body), a.publishedAt, embedding ? JSON.stringify(embedding) : null]
+        );
+        if (res.rows?.[0]?.id) {
+          if (embedding) {
+            insertedArticles.push({ ...res.rows[0], embedding });
+          } else {
+            // If embedding fails, log it. It will be skipped from clustering.
+            console.warn(`[BRIEF WARN] No embedding generated for ${a.url}`);
+          }
         }
       } catch (err) {
-        console.warn('Failed to fetch full text for', a.url, err);
+        console.error(`[BRIEF FAIL] Insert/Embed failed for ${a.url}`, err);
       }
-    })
-  );
-
-  // Create one story per article (no clustering)
-  // Step 1: Create all stories and link articles (fast DB ops, can stay sequential)
-  const storyIdsForBrief: number[] = [];
-  const articleStoryPairs: { storyId: number; articleId: number }[] = [];
-
-  for (let i = 0; i < rawArticles.length; i++) {
-    let updateRowCount = 0;
-    const articleId = articleIds[i];
-    const a = rawArticles[i];
-
-    console.log(`[BRIEF LINK-START] i=${i} articleId=${articleId} (url="${a.url}") => about to create story`);
-
-    const storyRes = await pool.query<{ id: number }>(
-      `INSERT INTO stories (title, summary, article_count, status, first_seen_at, last_updated_at)
-       VALUES ($1, $2, $3, 'active', NOW(), NOW())
-       RETURNING id`,
-      ['Untitled', '', 1]
-    );
-    const storyId = storyRes.rows[0].id;
-    storyIdsForBrief.push(storyId);
-    console.log(`[BRIEF LINK-STORY] i=${i} created storyId=${storyId}`);
-
-    const updateRes = await pool.query(
-      'UPDATE articles SET story_id = $1 WHERE id = $2',
-      [storyId, articleId]
-    );
-    updateRowCount = updateRes.rowCount ?? 0;
-    console.log(`[BRIEF LINK-ARTICLE] UPDATED articleId=${articleId} -> storyId=${storyId}, rowCount=${updateRowCount}`);
-
-    if (updateRowCount === 0) {
-      console.warn(`[BRIEF WARN] UPDATE affected 0 rows for articleId=${articleId} -> storyId=${storyId}`);
     }
 
-    articleStoryPairs.push({ storyId, articleId });
-  }
+    console.log(`[BRIEF] articleIds with embeddings collected: ${insertedArticles.length}`);
 
-  // Step 2: Generate all summaries in parallel with stagger (slow NIM calls)
-  await Promise.all(
-    articleStoryPairs.map(async ({ storyId, articleId }, index) => {
-      // Stagger starts by 500ms per article to avoid rate-limiting NIM
-      await new Promise(resolve => setTimeout(resolve, index * 500));
-
-      try {
-        const members = await pool.query<ArticleRow>(
-          'SELECT * FROM articles WHERE id = $1',
-          [articleId]
-        );
-        // Each article gets its own aiState so failures are independent
-        const summary = await buildSummary(members.rows, { available: true });
-
-        await pool.query(
-          'UPDATE stories SET title = $1, summary = $2 WHERE id = $3',
-          [summary.title, summary.text, storyId]
-        );
-      } catch (err) {
-        console.error(`Failed to build summary for story ${storyId}:`, err);
-      }
-    })
-  );
-
-  // Verification query to confirm linkage
-  if (articleIds.length > 0) {
-    const verifyRes = await pool.query<{ id: number; story_id: number | null; url: string }>(
-      'SELECT id, story_id, url FROM articles WHERE id = ANY($1)',
-      [articleIds]
+    // Fetch full text for articles in parallel
+    await Promise.all(
+      insertedArticles.map(async (a) => {
+        try {
+          const text = await fetchArticleText(a.url);
+          if (text) {
+            await pool.query('UPDATE articles SET full_text = $1 WHERE url = $2', [text, a.url]);
+            a.full_text = text; // update in memory for summarization
+          }
+        } catch (err) {
+          console.warn('Failed to fetch full text for', a.url, err);
+        }
+      })
     );
-    console.log(`[BRIEF VERIFY] Post-linkage check for ${verifyRes.rows.length} articles:`);
-    for (const row of verifyRes.rows) {
-      console.log(`  ARTICLE id=${row.id} story_id=${row.story_id} url="${row.url}"`);
+
+    // Cluster the articles among themselves
+    const SIMILARITY_THRESHOLD = 0.80; // Allow slight variations to group together
+    interface Cluster {
+      articles: typeof insertedArticles;
+      centroid: number[];
     }
-  } else {
-    console.log(`[BRIEF VERIFY] No articleIds to verify (rawArticles was empty)`);
-  }
+    const clusters: Cluster[] = [];
+
+    for (const a of insertedArticles) {
+      let bestCluster: Cluster | null = null;
+      let bestScore = -Infinity;
+
+      for (const c of clusters) {
+        const score = cosineSimilarity(a.embedding, c.centroid);
+        if (score > bestScore) {
+          bestScore = score;
+          bestCluster = c;
+        }
+      }
+
+      if (bestCluster && bestScore >= SIMILARITY_THRESHOLD) {
+        bestCluster.articles.push(a);
+        bestCluster.centroid = averageVectors(bestCluster.articles.map(art => art.embedding));
+      } else {
+        clusters.push({
+          articles: [a],
+          centroid: a.embedding
+        });
+      }
+    }
+
+    // Sort clusters by size (most articles first) to prioritize heavily covered news
+    clusters.sort((a, b) => b.articles.length - a.articles.length);
+    const topClusters = clusters.slice(0, 15);
+    
+    console.log(`[BRIEF CLUSTERS] Formed ${clusters.length} total clusters, keeping top ${topClusters.length}`);
+
+    const storyIdsForBrief: number[] = [];
+    const storyTasks: { storyId: number; articles: typeof insertedArticles }[] = [];
+
+    for (let i = 0; i < topClusters.length; i++) {
+      const cluster = topClusters[i];
+      
+      const storyRes = await pool.query<{ id: number }>(
+        `INSERT INTO stories (title, summary, article_count, status, centroid, first_seen_at, last_updated_at)
+         VALUES ($1, $2, $3, 'active', $4, NOW(), NOW())
+         RETURNING id`,
+        ['Untitled', '', cluster.articles.length, JSON.stringify(cluster.centroid)]
+      );
+      const storyId = storyRes.rows[0].id;
+      storyIdsForBrief.push(storyId);
+      
+      const articleIdsInCluster = cluster.articles.map(a => a.id);
+      await pool.query(
+        'UPDATE articles SET story_id = $1 WHERE id = ANY($2)',
+        [storyId, articleIdsInCluster]
+      );
+
+      storyTasks.push({ storyId, articles: cluster.articles });
+      console.log(`[BRIEF STORY] created storyId=${storyId} with ${cluster.articles.length} articles`);
+    }
+
+    // Generate summaries for each story (slow NIM calls)
+    await Promise.all(
+      storyTasks.map(async ({ storyId, articles }, index) => {
+        // Stagger starts by 500ms per story to avoid rate-limiting NIM
+        await new Promise(resolve => setTimeout(resolve, index * 500));
+
+        try {
+          const summary = await buildSummary(articles, { available: true });
+
+          await pool.query(
+            'UPDATE stories SET title = $1, summary = $2 WHERE id = $3',
+            [summary.title, summary.text, storyId]
+          );
+        } catch (err) {
+          console.error(`Failed to build summary for story ${storyId}:`, err);
+        }
+      })
+    );
 
   // Store brief
   await pool.query(

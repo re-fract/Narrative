@@ -49,6 +49,18 @@ export interface StoryResponse {
   articles: ArticleItem[]
 }
 
+export interface TimelineArticle {
+  id: number
+  title: string
+  url: string
+  published_at: string
+  source_name: string
+}
+
+export interface TimelineResponse {
+  articles: TimelineArticle[]
+}
+
 export interface ExpansionResponse {
   expansion: { text: string }
 }
@@ -84,6 +96,10 @@ export function getBriefToday(): Promise<BriefResponse> {
 
 export function getStory(id: string | number): Promise<StoryResponse> {
   return apiRequest<StoryResponse>(`/stories/${id}`)
+}
+
+export function getStoryTimeline(id: string | number): Promise<TimelineResponse> {
+  return apiRequest<TimelineResponse>(`/stories/${id}/timeline`)
 }
 
 export function getStoryExpand(id: string | number): Promise<ExpansionResponse> {

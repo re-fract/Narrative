@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db/index.js';
 import { generateNimSummary } from '../services/nimClient.js';
+import { cosineSimilarity } from '../services/vectorUtils.js';
 
 const router = Router();
 
@@ -135,6 +136,93 @@ Rules:
     res.json({ text });
   } catch {
     res.status(500).json({ error: 'Failed to simplify story' });
+  }
+});
+
+// GET /api/stories/:id/timeline — 7-day retrospective article search by embedding similarity
+router.get('/:id/timeline', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const SIMILARITY_THRESHOLD = 0.75; // Slightly looser than clustering to catch related coverage
+    const DAYS_BACK = 7;
+
+    // Load story centroid
+    const storyResult = await pool.query<{ centroid: string | null }>(
+      'SELECT centroid FROM stories WHERE id = $1',
+      [id]
+    );
+    if (storyResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Story not found' });
+    }
+
+    const centroidRaw = storyResult.rows[0].centroid;
+    if (!centroidRaw) {
+      // No centroid stored — fall back to articles directly linked to story
+      const fallback = await pool.query(
+        `SELECT a.id, a.title, a.url, a.published_at, s.name as source_name
+         FROM articles a
+         JOIN sources s ON a.source_id = s.id
+         WHERE a.story_id = $1
+         ORDER BY a.published_at ASC`,
+        [id]
+      );
+      return res.json({ articles: fallback.rows });
+    }
+
+    const centroid: number[] = typeof centroidRaw === 'string'
+      ? JSON.parse(centroidRaw)
+      : (centroidRaw as unknown as number[]);
+
+    // Fetch all articles from the last N days that have embeddings stored
+    const cutoff = new Date(Date.now() - DAYS_BACK * 24 * 60 * 60 * 1000);
+    const articlesResult = await pool.query<{
+      id: number;
+      title: string;
+      url: string;
+      published_at: string;
+      source_name: string;
+      embedding: string;
+    }>(
+      `SELECT a.id, a.title, a.url, a.published_at, s.name as source_name, a.embedding
+       FROM articles a
+       JOIN sources s ON a.source_id = s.id
+       WHERE a.fetched_at >= $1
+         AND a.embedding IS NOT NULL
+       ORDER BY a.published_at ASC`,
+      [cutoff]
+    );
+
+    // Filter by cosine similarity to the story centroid
+    const scored = articlesResult.rows
+      .map(row => {
+        const embedding: number[] = typeof row.embedding === 'string'
+          ? JSON.parse(row.embedding)
+          : (row.embedding as unknown as number[]);
+        const score = cosineSimilarity(centroid, embedding);
+        return { ...row, score };
+      })
+      .filter(row => row.score >= SIMILARITY_THRESHOLD);
+
+    // Deduplicate: keep only the highest-scoring article per (source, day)
+    const seen = new Map<string, typeof scored[number]>();
+    for (const article of scored) {
+      const day = new Date(article.published_at).toISOString().split('T')[0];
+      const key = `${article.source_name}::${day}`;
+      const existing = seen.get(key);
+      if (!existing || article.score > existing.score) {
+        seen.set(key, article);
+      }
+    }
+
+    // Sort chronologically and strip internal fields
+    const matched = Array.from(seen.values())
+      .sort((a, b) => new Date(a.published_at).getTime() - new Date(b.published_at).getTime())
+      .map(({ score: _score, embedding: _emb, ...rest }) => rest);
+
+    res.json({ articles: matched });
+  } catch (err) {
+    console.error('Timeline error:', err);
+    res.status(500).json({ error: 'Failed to build timeline' });
   }
 });
 

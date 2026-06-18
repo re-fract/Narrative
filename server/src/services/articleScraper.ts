@@ -111,7 +111,7 @@ export async function fetchArticleText(url: string): Promise<string | null> {
     }
 
     const html = await response.text();
-    let article;
+    let article: any;
     withCssWarningsSuppressed(() => {
       const jsdom = new JSDOM(html, { url });
       const reader = new Readability(jsdom.window.document);

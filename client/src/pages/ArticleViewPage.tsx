@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
-import { getStory, getStorySimplify } from '../api/client'
-import type { StoryResponse } from '../api/client'
+import { getStory, getStorySimplify, getStoryTimeline } from '../api/client'
+import type { StoryResponse, TimelineArticle } from '../api/client'
 import SimplifyToggle, { type SimplifyMode } from '../components/SimplifyToggle'
+import TimelineItem from '../components/TimelineItem'
 
 interface ParsedArticleBodyProps {
   text: string
@@ -110,6 +111,8 @@ function ArticleViewPage() {
   const [simplifyLoading, setSimplifyLoading] = useState(false)
   const [simplifyError, setSimplifyError] = useState<string | null>(null)
   const [chatInput, setChatInput] = useState('')
+  const [timelineArticles, setTimelineArticles] = useState<TimelineArticle[]>([])
+  const [timelineLoading, setTimelineLoading] = useState(false)
 
   const story = data?.story
   const articles = data?.articles ?? []
@@ -132,8 +135,30 @@ function ArticleViewPage() {
     }
   }
 
+  const fetchTimeline = async () => {
+    if (!id) return
+    setTimelineLoading(true)
+    try {
+      const res = await getStoryTimeline(Number(id))
+      // Deduplicate by (source, local date) — backend uses UTC which can mismatch display timezone
+      const seen = new Map<string, typeof res.articles[number]>()
+      for (const article of res.articles) {
+        // res.articles is already sorted oldest→newest so later articles overwrite earlier ones
+        const localDate = new Date(article.published_at).toLocaleDateString()
+        const key = `${article.source_name}::${localDate}`
+        seen.set(key, article)
+      }
+      setTimelineArticles(Array.from(seen.values()))
+    } catch {
+      // silently fail — timeline is non-critical
+    } finally {
+      setTimelineLoading(false)
+    }
+  }
+
   useEffect(() => {
     fetchStory()
+    fetchTimeline()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
@@ -233,19 +258,38 @@ function ArticleViewPage() {
               </div>
             </header>
 
-            {/* Articles list below summary */}
-            <div className="flex flex-wrap gap-2">
-              {articles.map((article) => (
-                <a
-                  key={article.id}
-                  href={article.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-surface-container-low border border-outline-variant rounded-full font-caption text-caption text-on-surface-variant hover:border-secondary hover:text-secondary transition-colors"
-                >
-                  {article.source_name}
-                </a>
-              ))}
+            {/* News History Timeline */}
+            <div className="flex flex-col gap-4 mt-4">
+              <h3 className="font-display text-2xl font-bold text-primary mb-2">Timeline</h3>
+              {timelineLoading ? (
+                <div className="flex items-center gap-2 text-on-surface-variant">
+                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-secondary border-t-transparent"></span>
+                  <span className="font-body-md text-sm">Loading 7-day history...</span>
+                </div>
+              ) : timelineArticles.length === 0 ? (
+                <p className="text-on-surface-variant text-sm font-body-md">No related articles found in the past 7 days.</p>
+              ) : (
+                <div className="border-l-2 border-outline-variant pl-4 ml-2 flex flex-col gap-6">
+                  {timelineArticles.map((article) => (
+                    <TimelineItem
+                      key={article.id}
+                      category={article.source_name || 'News Source'}
+                      time={article.published_at
+                        ? new Date(article.published_at).toLocaleDateString('en-GB', {
+                            day: 'numeric',
+                            month: 'short',
+                            year: 'numeric',
+                          }) + ' · ' + new Date(article.published_at).toLocaleTimeString('en-GB', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })
+                        : 'Unknown Date'}
+                      headline={article.title}
+                      description=""
+                    />
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Article Body */}
