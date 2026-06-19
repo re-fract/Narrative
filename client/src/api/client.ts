@@ -107,8 +107,11 @@ export function getStoryExpand(id: string | number): Promise<ExpansionResponse> 
   return apiRequest<ExpansionResponse>(`/stories/${id}/expand`)
 }
 
-export function getStorySimplify(id: string | number, level: string): Promise<SimplifyResponse> {
-  return apiRequest<SimplifyResponse>(`/stories/${id}/simplify?level=${encodeURIComponent(level)}`)
+export function getStorySimplify(id: string | number, level: string, articleId?: number): Promise<SimplifyResponse> {
+  const params = articleId
+    ? `level=${encodeURIComponent(level)}&articleId=${articleId}`
+    : `level=${encodeURIComponent(level)}`
+  return apiRequest<SimplifyResponse>(`/stories/${id}/simplify?${params}`)
 }
 
 export function getFollows(): Promise<FollowsResponse> {

@@ -136,7 +136,41 @@ router.get('/:id/simplify', async (req, res) => {
   try {
     const { id } = req.params;
     const level = String(req.query.level || 'simple');
+    const articleId = req.query.articleId ? Number(req.query.articleId) : null;
 
+    const prompt = `Simplify this news article for a general reader.
+
+Rules:
+- Write 2-3 concise paragraphs in essay format (NOT bullet points).
+- Cover the key facts, context, and why it matters.
+- Use plain language but don't oversimplify — this is for the full article view, not a headline overview.
+- Aim for about 120-180 words. Do NOT go below 100 words.
+- No preamble, labels, or meta-text.
+
+`;
+
+    // ── Article-specific path ──────────────────────────────────────────────
+    // When articleId is provided, simplify THAT article's own content.
+    // This ensures each timeline item (different source/date) gets a unique
+    // simplification rather than sharing the story-level summary.
+    if (articleId) {
+      const artResult = await pool.query(
+        'SELECT title, body, full_text FROM articles WHERE id = $1',
+        [articleId]
+      );
+      if (artResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Article not found' });
+      }
+      const art = artResult.rows[0];
+      const content = (art.full_text || art.body || '').trim();
+      if (!content) {
+        return res.status(422).json({ error: 'Article has no content to simplify' });
+      }
+      const result = await generateNimSummary(`${prompt}${art.title}\n\n${content}`);
+      return res.json({ text: result ?? '' });
+    }
+
+    // ── Story-level path (cached) ─────────────────────────────────────────
     // Check cache
     const cached = await pool.query(
       'SELECT text FROM simplifications WHERE story_id = $1 AND level = $2',
@@ -152,17 +186,6 @@ router.get('/:id/simplify', async (req, res) => {
     }
 
     const { title, summary } = storyResult.rows[0];
-
-    const prompt = `Simplify this news story for a general reader.
-
-Rules:
-- Write 2-3 concise paragraphs in essay format (NOT bullet points).
-- Cover the key facts, context, and why it matters.
-- Use plain language but don't oversimplify — this is for the full article view, not a headline overview.
-- Aim for about 120-180 words. Do NOT go below 100 words.
-- No preamble, labels, or meta-text.
-
-`;
 
     const result = await generateNimSummary(`${prompt}${title}\n\n${summary}`);
     const text = result ?? '';

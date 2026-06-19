@@ -104,6 +104,10 @@ function ArticleViewPage() {
   // currentArticleId is the specific article shown (equals URL param when navigating via article id;
   // equals the latest article id when navigating via story id from the brief)
   const [currentArticleId, setCurrentArticleId] = useState<number | null>(null)
+  // The real story ID returned by the backend — may differ from the URL param when
+  // the URL contains an article ID rather than a story ID (timeline navigation).
+  // All secondary API calls (simplify, expand) must use this, not Number(id).
+  const [resolvedStoryId, setResolvedStoryId] = useState<number | null>(null)
 
   const story = data?.story
   const articles = data?.articles ?? []
@@ -139,8 +143,7 @@ function ArticleViewPage() {
       // - If loaded via article ID (from timeline): articles array has exactly 1 item
       const viewedArticleId = res.articles[0]?.id ?? null
       setCurrentArticleId(viewedArticleId)
-      // Always fetch timeline using the canonical story.id (not the URL param)
-      // This is the key invariant: same timeline regardless of how you navigated here
+      setResolvedStoryId(res.story.id)
       fetchTimeline(res.story.id)
     } catch {
       setError('Failed to load story')
@@ -157,6 +160,7 @@ function ArticleViewPage() {
     setSimplifyCache({})
     setSimplifyError(null)
     setTimelineArticles([])
+    setResolvedStoryId(null)
     fetchStory()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
@@ -177,7 +181,9 @@ function ArticleViewPage() {
     setSimplifyLoading(true)
     setSimplifyError(null)
     try {
-      const res = await getStorySimplify(Number(id), 'simple')
+      const storyId = resolvedStoryId ?? Number(id)
+      const articleIdForSimplify = data?.articles?.[0]?.id
+      const res = await getStorySimplify(storyId, 'simple', articleIdForSimplify)
       setSimplifyCache((prev) => ({ ...prev, simple: res.text }))
     } catch {
       setSimplifyError('Failed to load simplified version')
