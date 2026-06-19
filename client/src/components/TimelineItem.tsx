@@ -44,9 +44,8 @@ export default function TimelineItem({
       )}
 
       <p
-        className={`font-body-md text-body-md text-on-surface-variant ${
-          hasActions ? 'mb-4' : ''
-        }`}
+        className={`font-body-md text-body-md text-on-surface-variant ${hasActions ? 'mb-4' : ''
+          }`}
       >
         {description}
       </p>

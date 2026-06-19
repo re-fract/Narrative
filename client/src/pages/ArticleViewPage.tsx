@@ -193,10 +193,10 @@ function ArticleViewPage() {
 
   const storyDate = story
     ? new Date(story.first_seen_at).toLocaleDateString('en-US', {
-        month: 'long',
-        day: 'numeric',
-        year: 'numeric',
-      }).toUpperCase()
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    }).toUpperCase()
     : ''
 
   const displayText = mode === 'original' ? null : simplifyCache['simple'] ?? null
@@ -281,13 +281,13 @@ function ArticleViewPage() {
                       category={article.source_name || 'News Source'}
                       time={article.published_at
                         ? new Date(article.published_at).toLocaleDateString('en-GB', {
-                            day: 'numeric',
-                            month: 'short',
-                            year: 'numeric',
-                          }) + ' · ' + new Date(article.published_at).toLocaleTimeString('en-GB', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })
+                          day: 'numeric',
+                          month: 'short',
+                          year: 'numeric',
+                        }) + ' · ' + new Date(article.published_at).toLocaleTimeString('en-GB', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
                         : 'Unknown Date'}
                       headline={article.title}
                       description=""
