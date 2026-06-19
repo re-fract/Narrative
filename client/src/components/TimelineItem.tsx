@@ -7,6 +7,7 @@ interface TimelineItemProps {
   description: string;
   hasActions?: boolean;
   articleId?: number;
+  isActive?: boolean;
 }
 
 export default function TimelineItem({
@@ -16,9 +17,16 @@ export default function TimelineItem({
   description,
   hasActions,
   articleId,
+  isActive,
 }: TimelineItemProps) {
   const content = (
-    <article className="bg-surface border border-outline-variant p-stack-md hover:bg-surface-container-low transition-colors duration-200 group relative">
+    <article
+      className={`border p-stack-md transition-colors duration-200 group relative ${
+        isActive
+          ? 'bg-secondary/5 border-secondary/40 border-l-4 border-l-secondary'
+          : 'bg-surface border-outline-variant hover:bg-surface-container-low'
+      }`}
+    >
       <div className="flex justify-between items-start mb-2">
         <div className="flex items-center gap-2">
           <span className="font-label-caps text-label-caps text-secondary bg-secondary/10 px-2 py-1 rounded">
@@ -27,6 +35,11 @@ export default function TimelineItem({
           <span className="font-caption text-caption text-on-surface-variant">
             &bull; {time}
           </span>
+          {isActive && (
+            <span className="font-label-caps text-label-caps text-secondary bg-secondary/20 px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider">
+              You are here
+            </span>
+          )}
         </div>
         <button
           aria-label="Bookmark"

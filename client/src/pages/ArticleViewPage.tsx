@@ -113,9 +113,27 @@ function ArticleViewPage() {
   const [chatInput, setChatInput] = useState('')
   const [timelineArticles, setTimelineArticles] = useState<TimelineArticle[]>([])
   const [timelineLoading, setTimelineLoading] = useState(false)
+  // currentArticleId is the specific article shown (equals URL param when navigating via article id;
+  // equals the latest article id when navigating via story id from the brief)
+  const [currentArticleId, setCurrentArticleId] = useState<number | null>(null)
 
   const story = data?.story
   const articles = data?.articles ?? []
+
+  const fetchTimeline = async (storyId: number) => {
+    setTimelineLoading(true)
+    try {
+      const res = await getStoryTimeline(storyId)
+      // Sort newest first — backend returns oldest→newest
+      const sorted = res.articles
+        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
+      setTimelineArticles(sorted)
+    } catch {
+      // silently fail — timeline is non-critical
+    } finally {
+      setTimelineLoading(false)
+    }
+  }
 
   const fetchStory = async () => {
     if (!id) {
@@ -128,6 +146,14 @@ function ArticleViewPage() {
     try {
       const res = await getStory(Number(id))
       setData(res)
+      // Track which specific article is being viewed:
+      // - If loaded via story ID (from brief): show the most recent article (first after DESC sort)
+      // - If loaded via article ID (from timeline): articles array has exactly 1 item
+      const viewedArticleId = res.articles[0]?.id ?? null
+      setCurrentArticleId(viewedArticleId)
+      // Always fetch timeline using the canonical story.id (not the URL param)
+      // This is the key invariant: same timeline regardless of how you navigated here
+      fetchTimeline(res.story.id)
     } catch {
       setError('Failed to load story')
     } finally {
@@ -135,34 +161,8 @@ function ArticleViewPage() {
     }
   }
 
-  const fetchTimeline = async () => {
-    if (!id) return
-    setTimelineLoading(true)
-    try {
-      const res = await getStoryTimeline(Number(id))
-      // Deduplicate by (source, local date) — backend uses UTC which can mismatch display timezone
-      const seen = new Map<string, typeof res.articles[number]>()
-      for (const article of res.articles) {
-        // res.articles is already sorted oldest→newest so later articles overwrite earlier ones
-        const localDate = new Date(article.published_at).toLocaleDateString()
-        const key = `${article.source_name}::${localDate}`
-        seen.set(key, article)
-      }
-      // Filter out articles belonging to the current story, sort newest first
-      const filtered = Array.from(seen.values())
-        .filter((article) => article.story_id !== Number(id))
-        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
-      setTimelineArticles(filtered)
-    } catch {
-      // silently fail — timeline is non-critical
-    } finally {
-      setTimelineLoading(false)
-    }
-  }
-
   useEffect(() => {
     fetchStory()
-    fetchTimeline()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
@@ -245,16 +245,16 @@ function ArticleViewPage() {
             {/* Headline + Byline */}
             <header className="flex flex-col gap-2">
               <h1 className="font-display text-4xl md:text-5xl lg:text-6xl font-black leading-tight text-primary">
-                {story.title}
+                {(!story.title || story.title === 'Untitled') ? (articles[0]?.title ?? 'Loading…') : story.title}
               </h1>
               <div className="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant">
-                <time dateTime={story.first_seen_at}>
-                  {new Date(story.first_seen_at).toLocaleDateString('en-GB', {
+                <time dateTime={articles[0]?.published_at ?? story.first_seen_at}>
+                  {new Date(articles[0]?.published_at ?? story.first_seen_at).toLocaleDateString('en-GB', {
                     day: 'numeric',
                     month: 'long',
                     year: 'numeric',
                   })}{' '}
-                  {new Date(story.first_seen_at).toLocaleTimeString('en-GB', {
+                  {new Date(articles[0]?.published_at ?? story.first_seen_at).toLocaleTimeString('en-GB', {
                     hour: '2-digit',
                     minute: '2-digit',
                   })}
@@ -271,28 +271,57 @@ function ArticleViewPage() {
                   <span className="font-body-md text-sm">Loading 7-day history...</span>
                 </div>
               ) : timelineArticles.length === 0 ? (
-                <p className="text-on-surface-variant text-sm font-body-md">No related articles found in the past 7 days.</p>
+                <p className="text-on-surface-variant text-sm font-body-md">No coverage history found for this story yet.</p>
               ) : (
-                <div className="border-l-2 border-outline-variant pl-4 ml-2 flex flex-col gap-6">
-                  {timelineArticles.map((article) => (
-                    <TimelineItem
-                      key={article.id}
-                      articleId={article.story_id ?? undefined}
-                      category={article.source_name || 'News Source'}
-                      time={article.published_at
+                <div className="border-l-2 border-outline-variant pl-4 ml-2 flex flex-col gap-2">
+                  {(() => {
+                    // Group articles by date for clear timeline progression
+                    const groups: { label: string; articles: typeof timelineArticles }[] = []
+                    let currentLabel = ''
+                    for (const article of timelineArticles) {
+                      const dateLabel = article.published_at
                         ? new Date(article.published_at).toLocaleDateString('en-GB', {
+                          weekday: 'short',
                           day: 'numeric',
-                          month: 'short',
+                          month: 'long',
                           year: 'numeric',
-                        }) + ' · ' + new Date(article.published_at).toLocaleTimeString('en-GB', {
-                          hour: '2-digit',
-                          minute: '2-digit',
                         })
-                        : 'Unknown Date'}
-                      headline={article.title}
-                      description=""
-                    />
-                  ))}
+                        : 'Unknown Date'
+                      if (dateLabel !== currentLabel) {
+                        currentLabel = dateLabel
+                        groups.push({ label: dateLabel, articles: [] })
+                      }
+                      groups[groups.length - 1].articles.push(article)
+                    }
+
+                    return groups.map((group) => (
+                      <div key={group.label} className="flex flex-col gap-3">
+                        {/* Date separator */}
+                        <div className="flex items-center gap-3 pt-3 first:pt-0">
+                          <div className="w-3 h-3 rounded-full bg-secondary -ml-[1.625rem] border-2 border-surface shrink-0" />
+                          <span className="font-label-caps text-label-caps text-secondary tracking-wider">
+                            {group.label}
+                          </span>
+                        </div>
+                        {group.articles.map((article) => (
+                          <TimelineItem
+                            key={article.id}
+                            articleId={article.id}
+                            isActive={article.id === currentArticleId}
+                            category={article.source_name || 'News Source'}
+                            time={article.published_at
+                              ? new Date(article.published_at).toLocaleTimeString('en-GB', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })
+                              : ''}
+                            headline={article.title}
+                            description=""
+                          />
+                        ))}
+                      </div>
+                    ))
+                  })()}
                 </div>
               )}
             </div>
@@ -317,25 +346,33 @@ function ArticleViewPage() {
             {mode !== 'original' && displayText ? (
               <ParsedArticleBody text={displayText} />
             ) : null}
-            {(mode === 'original' || simplifyError) && (
-              <div className="font-body text-body-lg text-on-surface flex flex-col gap-6 leading-relaxed">
-                {articles.map((article) => (
-                  <div key={article.id}>
-                    {articles.length > 1 && (
-                      <h2 className="font-display text-headline-md text-primary mt-4 pt-4 border-t border-outline-variant">
-                        {article.title}
-                      </h2>
-                    )}
-                    <ParsedArticleBody text={article.full_text || article.body || 'Original article content unavailable.'} source={article.source_name} publishedAt={article.published_at} />
+            {(mode === 'original' || simplifyError) && (() => {
+              // Always show only the single displayed article (articles[0]).
+              // When navigating via story ID from brief: articles[0] is the most recent.
+              // When navigating via article ID from timeline: articles[0] is the specific article.
+              const displayArticle = articles[0]
+              if (!displayArticle) {
+                return (
+                  <div className="font-body text-body-lg text-on-surface-variant italic">
+                    Article content not available.
                   </div>
-                ))}
-              </div>
-            )}
+                )
+              }
+              return (
+                <div className="font-body text-body-lg text-on-surface flex flex-col gap-6 leading-relaxed">
+                  <ParsedArticleBody
+                    text={displayArticle.full_text || displayArticle.body || 'Original article content unavailable.'}
+                    source={displayArticle.source_name}
+                    publishedAt={displayArticle.published_at}
+                  />
+                </div>
+              )
+            })()}
 
             {/* Footer Actions */}
             <div className="pt-section-gap pb-stack-lg border-t border-outline-variant flex flex-col sm:flex-row gap-4 items-center justify-between">
               <div className="font-caption text-caption text-on-surface-variant">
-                {articles.map(a => a.source_name).filter(Boolean).join(', ')}
+                {articles[0]?.source_name ?? ''}
               </div>
               <a
                 href={articles[0]?.url}

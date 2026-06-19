@@ -1,4 +1,4 @@
-import { cosineSimilarity, averageVectors } from './vectorUtils.js';
+import { cosineSimilarity } from './vectorUtils.js';
 
 export interface Story {
   id: number;
@@ -18,12 +18,16 @@ export interface ArticleWithEmbedding {
   embedding: number[];
 }
 
-const SIMILARITY_THRESHOLD = 0.75; // Must match briefs.ts clustering threshold and stories.ts timeline threshold
+export const SIMILARITY_THRESHOLD = 0.75; // Must match briefs.ts clustering threshold and stories.ts timeline threshold
 
-export function findSimilarStory(
+/**
+ * Returns the best matching story AND its score.
+ * Callers can log merge decisions with scores for diagnostics.
+ */
+export function findSimilarStoryWithScore(
   embedding: number[],
   stories: Story[]
-): Story | null {
+): { story: Story; score: number } | null {
   let best: Story | null = null;
   let bestScore = -Infinity;
 
@@ -35,10 +39,61 @@ export function findSimilarStory(
     }
   }
 
-  if (best && bestScore > SIMILARITY_THRESHOLD) {
-    return best;
+  if (best && bestScore >= SIMILARITY_THRESHOLD) {
+    return { story: best, score: bestScore };
   }
   return null;
+}
+
+/**
+ * Convenience wrapper that returns only the matched story (no score).
+ */
+export function findSimilarStory(
+  embedding: number[],
+  stories: Story[]
+): Story | null {
+  const result = findSimilarStoryWithScore(embedding, stories);
+  return result ? result.story : null;
+}
+
+/**
+ * Computes a weighted centroid after merging new articles into an existing story.
+ * new_centroid = (old_centroid × old_count + sum(new_embeddings)) / (old_count + new_count)
+ *
+ * More stable than recomputing from scratch; doesn't require loading all
+ * historical embeddings.
+ */
+export function weightedCentroidUpdate(
+  oldCentroid: number[],
+  oldCount: number,
+  newEmbeddings: number[][]
+): number[] {
+  if (newEmbeddings.length === 0) return oldCentroid;
+
+  const dim = oldCentroid.length;
+  const newCount = newEmbeddings.length;
+  const totalCount = oldCount + newCount;
+
+  const result = new Array<number>(dim).fill(0);
+
+  // Add weighted old centroid
+  for (let i = 0; i < dim; i++) {
+    result[i] += oldCentroid[i] * oldCount;
+  }
+
+  // Add sum of new embeddings
+  for (const emb of newEmbeddings) {
+    for (let i = 0; i < dim; i++) {
+      result[i] += emb[i];
+    }
+  }
+
+  // Divide by total count
+  for (let i = 0; i < dim; i++) {
+    result[i] /= totalCount;
+  }
+
+  return result;
 }
 
 export function clusterArticles(

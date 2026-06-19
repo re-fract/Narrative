@@ -5,7 +5,10 @@ import { fetchAllFeeds } from '../services/rssFetcher.js';
 import { fetchArticleText } from '../services/articleScraper.js';
 import { generateEmbedding } from '../services/geminiClient.js';
 import { cosineSimilarity, averageVectors } from '../services/vectorUtils.js';
+import { findSimilarStoryWithScore, weightedCentroidUpdate, SIMILARITY_THRESHOLD } from '../services/storyCluster.js';
 import type { ArticleRow, StoryRow } from '../types/index.js';
+
+const MERGE_WINDOW_DAYS = 7; // Stories older than this won't absorb new articles
 
 function parseBullets(summary: string): string[] {
   return summary
@@ -101,7 +104,7 @@ async function getOrCreateBrief() {
       return formatBriefFromRow(recheck.rows[0]);
     }
 
-    // === GENERATION (same as before) ===
+    // === GENERATION ===
     let aiState = { available: true };
 
     // Fetch feeds
@@ -158,19 +161,108 @@ async function getOrCreateBrief() {
       })
     );
 
-    // Cluster the articles among themselves
-    const SIMILARITY_THRESHOLD = 0.75; // Must match timeline threshold in stories.ts to prevent gap-zone articles (story_id=NULL)
+    // ───────────────────────────────────────────────────
+    // Phase 1: Load recent existing stories (last 7 days)
+    // ───────────────────────────────────────────────────
+    const existingStoriesResult = await pool.query<{
+      id: number;
+      centroid: string;
+      article_count: number;
+      title: string | null;
+      summary: string | null;
+    }>(
+      `SELECT id, centroid, article_count, title, summary
+       FROM stories
+       WHERE centroid IS NOT NULL
+         AND status = 'active'
+         AND frozen_at IS NULL
+         AND last_updated_at >= NOW() - INTERVAL '${MERGE_WINDOW_DAYS} days'`
+    );
+
+    // Build in-memory story list with parsed centroids
+    type ExistingStory = {
+      id: number;
+      centroid: number[];
+      articleCount: number;
+      title: string | null;
+      summary: string | null;
+    };
+    const existingStories: ExistingStory[] = existingStoriesResult.rows.map(r => ({
+      id: r.id,
+      centroid: typeof r.centroid === 'string' ? JSON.parse(r.centroid) : (r.centroid as unknown as number[]),
+      articleCount: r.article_count,
+      title: r.title,
+      summary: r.summary,
+    }));
+
+    console.log(`[BRIEF] Found ${existingStories.length} existing active stories within ${MERGE_WINDOW_DAYS} days`);
+
+    // Track which existing stories gained new articles (for centroid/cache updates)
+    const mergedStoryNewEmbeddings = new Map<number, number[][]>(); // storyId → new embeddings
+    const mergedStoryArticleIds = new Map<number, number[]>(); // storyId → new article ids
+
+    // ───────────────────────────────────────────────────────────────
+    // Phase 2: For each article, try to match against existing stories
+    // ───────────────────────────────────────────────────────────────
+    const unmatchedArticles: (ArticleRow & { embedding: number[] })[] = [];
+
+    for (const article of insertedArticles) {
+      // Skip articles that already have a story_id (they were assigned on a previous run)
+      if (article.story_id) {
+        console.log(`[BRIEF] Article ${article.id} already has story_id=${article.story_id}, skipping merge check`);
+        continue;
+      }
+
+      const match = findSimilarStoryWithScore(article.embedding, existingStories);
+
+      if (match) {
+        const { story: matchedStory, score } = match;
+        console.log(`[BRIEF] Merged article ${article.id} into existing story ${matchedStory.id} (score: ${score.toFixed(3)})`);
+
+        // Assign story_id in the DB
+        await pool.query('UPDATE articles SET story_id = $1 WHERE id = $2', [matchedStory.id, article.id]);
+
+        // Track embeddings for centroid update
+        const embList = mergedStoryNewEmbeddings.get(matchedStory.id) ?? [];
+        embList.push(article.embedding);
+        mergedStoryNewEmbeddings.set(matchedStory.id, embList);
+
+        const artList = mergedStoryArticleIds.get(matchedStory.id) ?? [];
+        artList.push(article.id);
+        mergedStoryArticleIds.set(matchedStory.id, artList);
+
+        // Update the in-memory centroid immediately so subsequent articles in
+        // this batch can match against the already-evolved centroid
+        const storyInMemory = existingStories.find(s => s.id === matchedStory.id);
+        if (storyInMemory) {
+          storyInMemory.centroid = weightedCentroidUpdate(
+            storyInMemory.centroid,
+            storyInMemory.articleCount,
+            [article.embedding]
+          );
+          storyInMemory.articleCount += 1;
+        }
+      } else {
+        unmatchedArticles.push(article);
+      }
+    }
+
+    console.log(`[BRIEF] ${unmatchedArticles.length} articles unmatched — will form new clusters`);
+
+    // ─────────────────────────────────────────────────────────────
+    // Phase 3: Cluster unmatched articles among themselves
+    // ─────────────────────────────────────────────────────────────
     interface Cluster {
       articles: typeof insertedArticles;
       centroid: number[];
     }
-    const clusters: Cluster[] = [];
+    const newClusters: Cluster[] = [];
 
-    for (const a of insertedArticles) {
+    for (const a of unmatchedArticles) {
       let bestCluster: Cluster | null = null;
       let bestScore = -Infinity;
 
-      for (const c of clusters) {
+      for (const c of newClusters) {
         const score = cosineSimilarity(a.embedding, c.centroid);
         if (score > bestScore) {
           bestScore = score;
@@ -182,24 +274,27 @@ async function getOrCreateBrief() {
         bestCluster.articles.push(a);
         bestCluster.centroid = averageVectors(bestCluster.articles.map(art => art.embedding));
       } else {
-        clusters.push({
+        newClusters.push({
           articles: [a],
           centroid: a.embedding
         });
       }
     }
 
-    // Sort clusters by size (most articles first) to prioritize heavily covered news
-    clusters.sort((a, b) => b.articles.length - a.articles.length);
-    const topClusters = clusters.slice(0, 15);
-    
-    console.log(`[BRIEF CLUSTERS] Formed ${clusters.length} total clusters, keeping top ${topClusters.length}`);
+    // Sort clusters by size (most articles first)
+    newClusters.sort((a, b) => b.articles.length - a.articles.length);
+    const topNewClusters = newClusters.slice(0, 15);
 
+    console.log(`[BRIEF CLUSTERS] Formed ${newClusters.length} new clusters, keeping top ${topNewClusters.length}`);
+
+    // ─────────────────────────────────────────────────────────────
+    // Phase 4: Create new stories for truly new clusters
+    // ─────────────────────────────────────────────────────────────
     const storyIdsForBrief: number[] = [];
-    const storyTasks: { storyId: number; articles: typeof insertedArticles }[] = [];
+    const storyTasks: { storyId: number; articles: typeof insertedArticles; isNew: boolean }[] = [];
 
-    for (let i = 0; i < topClusters.length; i++) {
-      const cluster = topClusters[i];
+    for (let i = 0; i < topNewClusters.length; i++) {
+      const cluster = topNewClusters[i];
       
       const storyRes = await pool.query<{ id: number }>(
         `INSERT INTO stories (title, summary, article_count, status, centroid, first_seen_at, last_updated_at)
@@ -216,11 +311,62 @@ async function getOrCreateBrief() {
         [storyId, articleIdsInCluster]
       );
 
-      storyTasks.push({ storyId, articles: cluster.articles });
+      storyTasks.push({ storyId, articles: cluster.articles, isNew: true });
       console.log(`[BRIEF STORY] created storyId=${storyId} with ${cluster.articles.length} articles`);
     }
 
-    // Generate summaries for each story (slow NIM calls)
+    // ─────────────────────────────────────────────────────────────
+    // Phase 5: Update merged existing stories in DB
+    // ─────────────────────────────────────────────────────────────
+    for (const [storyId, newEmbeddings] of mergedStoryNewEmbeddings.entries()) {
+      const original = existingStoriesResult.rows.find(r => r.id === storyId);
+      if (!original) continue;
+
+      const oldCount = original.article_count;
+      const oldCentroid: number[] = typeof original.centroid === 'string'
+        ? JSON.parse(original.centroid)
+        : (original.centroid as unknown as number[]);
+      const newCentroid = weightedCentroidUpdate(oldCentroid, oldCount, newEmbeddings);
+      const newCount = oldCount + newEmbeddings.length;
+
+      await pool.query(
+        `UPDATE stories
+         SET centroid = $1, article_count = $2, last_updated_at = NOW()
+         WHERE id = $3`,
+        [JSON.stringify(newCentroid), newCount, storyId]
+      );
+
+      // Invalidate cached summaries so they'll be regenerated with new articles
+      await pool.query('DELETE FROM simplifications WHERE story_id = $1', [storyId]);
+      await pool.query('UPDATE stories SET expansion_json = NULL WHERE id = $1', [storyId]);
+
+      // Collect articles for summary regeneration
+      const allArticlesResult = await pool.query<ArticleRow>(
+        'SELECT id, title, body, full_text, source_id, url, published_at, story_id FROM articles WHERE story_id = $1 ORDER BY published_at DESC',
+        [storyId]
+      );
+
+      storyTasks.push({
+        storyId,
+        articles: allArticlesResult.rows as (ArticleRow & { embedding: number[] })[],
+        isNew: false,
+      });
+
+      // Add merged story ID to the brief
+      storyIdsForBrief.push(storyId);
+
+      console.log(`[BRIEF] Updated existing story ${storyId}: article_count ${oldCount} → ${newCount}`);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Phase 6 (de-dupe): storyIdsForBrief may have duplicates if a story
+    // was merged but also appeared in a previous brief — deduplicate.
+    // ─────────────────────────────────────────────────────────────
+    const uniqueStoryIds = [...new Set(storyIdsForBrief)];
+
+    // ─────────────────────────────────────────────────────────────
+    // Phase 7: Generate/regenerate summaries for all affected stories
+    // ─────────────────────────────────────────────────────────────
     await Promise.all(
       storyTasks.map(async ({ storyId, articles }, index) => {
         // Stagger starts by 500ms per story to avoid rate-limiting NIM
@@ -242,13 +388,13 @@ async function getOrCreateBrief() {
   // Store brief
   await pool.query(
     `INSERT INTO briefs (brief_date, story_ids) VALUES ($1, $2)`,
-    [today, storyIdsForBrief]
+    [today, uniqueStoryIds]
   );
 
   // Return the brief
   const stories = await pool.query(
     'SELECT id, title, summary, article_count FROM stories WHERE id = ANY($1)',
-    [storyIdsForBrief]
+    [uniqueStoryIds]
   );
 
   const artSources = await pool.query(
@@ -256,7 +402,7 @@ async function getOrCreateBrief() {
      FROM articles a
      JOIN sources s ON a.source_id = s.id
      WHERE a.story_id = ANY($1)`,
-    [storyIdsForBrief]
+    [uniqueStoryIds]
   );
   const sourceMap = new Map<number, Set<string>>();
   for (const row of artSources.rows) {
@@ -267,7 +413,7 @@ async function getOrCreateBrief() {
 
     return {
       date: today,
-      stories: storyIdsForBrief.map((id: number) => {
+      stories: uniqueStoryIds.map((id: number) => {
         const s = stories.rows.find((r: StoryRow) => r.id === id);
         return {
           id: s?.id ?? id,

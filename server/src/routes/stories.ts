@@ -1,47 +1,87 @@
 import { Router } from 'express';
 import { pool } from '../db/index.js';
 import { generateNimSummary } from '../services/nimClient.js';
-import { cosineSimilarity } from '../services/vectorUtils.js';
 
 const router = Router();
 
-// GET /api/stories/:id — basic story info
+// GET /api/stories/:id — dual-purpose: accepts story ID OR article ID
+//
+// If id resolves to a story → returns that story + ALL its articles (brief nav flow)
+// If id resolves to an article → returns its parent story + ONLY that article (timeline nav flow)
+// The response shape is always { story, articles } so the frontend handles both cases uniformly.
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
+
+    // --- Attempt 1: treat id as a story id ---
     const storyResult = await pool.query(
       'SELECT id, title, summary, article_count, first_seen_at, last_updated_at FROM stories WHERE id = $1',
       [id]
     );
-    if (storyResult.rows.length === 0) {
+
+    if (storyResult.rows.length > 0) {
+      // Found a story — return all articles for it (standard brief navigation)
+      const articlesResult = await pool.query(
+        `SELECT a.id, a.title, a.url, a.body, a.full_text, a.published_at, s.name as source_name
+         FROM articles a
+         JOIN sources s ON a.source_id = s.id
+         WHERE a.story_id = $1
+         ORDER BY a.published_at DESC`,
+        [id]
+      );
+      // Diagnostic: also fetch raw articles without the JOIN to detect source_id issues
+      const rawArticlesDiag = await pool.query(
+        `SELECT id, url, title, body, full_text, story_id, source_id, published_at FROM articles WHERE story_id = $1 ORDER BY published_at DESC`,
+        [id]
+      );
+      console.log(`[STORY ${id}] Articles with JOIN: ${articlesResult.rows.length}, raw (no join): ${rawArticlesDiag.rows.length}`);
+      if (rawArticlesDiag.rows.length > 0 && articlesResult.rows.length === 0) {
+        console.log(`[STORY ${id}] JOIN dropped ALL articles — check source_id validity:`, rawArticlesDiag.rows.map(r => ({ id: r.id, source_id: r.source_id, url: r.url })));
+      }
+      if (rawArticlesDiag.rows.length === 0) {
+        console.log(`[STORY ${id}] CRITICAL: No articles found with story_id=${id} at all. This story is orphaned.`);
+      }
+      console.log(`Story ${id} articles:`, articlesResult.rows.map(a => ({ id: a.id, title: a.title, bodyLength: a.body?.length, fullTextLength: a.full_text?.length, bodyPreview: a.body?.substring(0, 100) })));
+
+      return res.json({
+        story: storyResult.rows[0],
+        articles: articlesResult.rows,
+      });
+    }
+
+    // --- Attempt 2: treat id as an article id ---
+    const articleResult = await pool.query(
+      `SELECT a.id, a.title, a.url, a.body, a.full_text, a.published_at, a.story_id, s.name as source_name
+       FROM articles a
+       JOIN sources s ON a.source_id = s.id
+       WHERE a.id = $1`,
+      [id]
+    );
+
+    if (articleResult.rows.length === 0) {
       return res.status(404).json({ error: 'Story not found' });
     }
 
-    const articlesResult = await pool.query(
-      `SELECT a.id, a.title, a.url, a.body, a.full_text, a.published_at, s.name as source_name
-       FROM articles a
-       JOIN sources s ON a.source_id = s.id
-       WHERE a.story_id = $1
-       ORDER BY a.published_at DESC`,
-      [id]
-    );
-    // Diagnostic: also fetch raw articles without the JOIN to detect source_id issues
-    const rawArticlesDiag = await pool.query(
-      `SELECT id, url, title, body, full_text, story_id, source_id, published_at FROM articles WHERE story_id = $1 ORDER BY published_at DESC`,
-      [id]
-    );
-    console.log(`[STORY ${id}] Articles with JOIN: ${articlesResult.rows.length}, raw (no join): ${rawArticlesDiag.rows.length}`);
-    if (rawArticlesDiag.rows.length > 0 && articlesResult.rows.length === 0) {
-      console.log(`[STORY ${id}] JOIN dropped ALL articles — check source_id validity:`, rawArticlesDiag.rows.map(r => ({ id: r.id, source_id: r.source_id, url: r.url })));
+    const article = articleResult.rows[0];
+    if (!article.story_id) {
+      return res.status(404).json({ error: 'Article has no parent story' });
     }
-    if (rawArticlesDiag.rows.length === 0) {
-      console.log(`[STORY ${id}] CRITICAL: No articles found with story_id=${id} at all. This story is orphaned.`);
-    }
-    console.log(`Story ${id} articles:`, articlesResult.rows.map(a => ({ id: a.id, title: a.title, bodyLength: a.body?.length, fullTextLength: a.full_text?.length, bodyPreview: a.body?.substring(0, 100) })));
 
-    res.json({
-      story: storyResult.rows[0],
-      articles: articlesResult.rows,
+    // Load the parent story
+    const parentStoryResult = await pool.query(
+      'SELECT id, title, summary, article_count, first_seen_at, last_updated_at FROM stories WHERE id = $1',
+      [article.story_id]
+    );
+    if (parentStoryResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Parent story not found' });
+    }
+
+    console.log(`[STORY] id=${id} resolved as article → parent story ${article.story_id}`);
+
+    // Return the parent story + only this specific article
+    return res.json({
+      story: parentStoryResult.rows[0],
+      articles: [article],
     });
   } catch {
     res.status(500).json({ error: 'Failed to fetch story' });
@@ -139,88 +179,45 @@ Rules:
   }
 });
 
-// GET /api/stories/:id/timeline — 7-day retrospective article search by embedding similarity
+// GET /api/stories/:id/timeline — O(1) DB query using story_id FK
+//
+// Accepts either a story ID or article ID. Returns one article per source
+// per day (deduped via DISTINCT ON), so the timeline reads as a progression
+// rather than a wall of same-day reports.
 router.get('/:id/timeline', async (req, res) => {
   try {
     const { id } = req.params;
-    const SIMILARITY_THRESHOLD = 0.75; // Slightly looser than clustering to catch related coverage
-    const DAYS_BACK = 7;
 
-    // Load story centroid
-    const storyResult = await pool.query<{ centroid: string | null }>(
-      'SELECT centroid FROM stories WHERE id = $1',
-      [id]
-    );
-    if (storyResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Story not found' });
+    // Determine the story_id: if id is a story, use it directly.
+    // If id is an article, look up its story_id.
+    let storyId = Number(id);
+
+    const storyCheck = await pool.query('SELECT id FROM stories WHERE id = $1', [storyId]);
+    if (storyCheck.rows.length === 0) {
+      // Maybe it's an article ID — look up its parent story
+      const articleCheck = await pool.query('SELECT story_id FROM articles WHERE id = $1', [storyId]);
+      if (articleCheck.rows.length === 0 || !articleCheck.rows[0].story_id) {
+        return res.status(404).json({ error: 'Story not found' });
+      }
+      storyId = articleCheck.rows[0].story_id;
     }
 
-    const centroidRaw = storyResult.rows[0].centroid;
-    if (!centroidRaw) {
-      // No centroid stored — fall back to articles directly linked to story
-      const fallback = await pool.query(
-        `SELECT a.id, a.story_id, a.title, a.url, a.published_at, s.name as source_name
+    // Deduplicate: one article per source per day (keep the latest per group).
+    // The frontend groups results by date for visual day-headers.
+    const result = await pool.query(
+      `SELECT * FROM (
+         SELECT DISTINCT ON (s.name, DATE(a.published_at))
+                a.id, a.story_id, a.title, a.url, a.published_at, s.name as source_name
          FROM articles a
          JOIN sources s ON a.source_id = s.id
          WHERE a.story_id = $1
-         ORDER BY a.published_at ASC`,
-        [id]
-      );
-      return res.json({ articles: fallback.rows });
-    }
-
-    const centroid: number[] = typeof centroidRaw === 'string'
-      ? JSON.parse(centroidRaw)
-      : (centroidRaw as unknown as number[]);
-
-    // Fetch all articles from the last N days that have embeddings stored
-    const cutoff = new Date(Date.now() - DAYS_BACK * 24 * 60 * 60 * 1000);
-    const articlesResult = await pool.query<{
-      id: number;
-      story_id: number;
-      title: string;
-      url: string;
-      published_at: string;
-      source_name: string;
-      embedding: string;
-    }>(
-      `SELECT a.id, a.story_id, a.title, a.url, a.published_at, s.name as source_name, a.embedding
-       FROM articles a
-       JOIN sources s ON a.source_id = s.id
-       WHERE a.fetched_at >= $1
-         AND a.embedding IS NOT NULL
-       ORDER BY a.published_at ASC`,
-      [cutoff]
+         ORDER BY s.name, DATE(a.published_at), a.published_at DESC
+       ) sub
+       ORDER BY sub.published_at DESC`,
+      [storyId]
     );
 
-    // Filter by cosine similarity to the story centroid
-    const scored = articlesResult.rows
-      .map(row => {
-        const embedding: number[] = typeof row.embedding === 'string'
-          ? JSON.parse(row.embedding)
-          : (row.embedding as unknown as number[]);
-        const score = cosineSimilarity(centroid, embedding);
-        return { ...row, score };
-      })
-      .filter(row => row.score >= SIMILARITY_THRESHOLD);
-
-    // Deduplicate: keep only the highest-scoring article per (source, day)
-    const seen = new Map<string, typeof scored[number]>();
-    for (const article of scored) {
-      const day = new Date(article.published_at).toISOString().split('T')[0];
-      const key = `${article.source_name}::${day}`;
-      const existing = seen.get(key);
-      if (!existing || article.score > existing.score) {
-        seen.set(key, article);
-      }
-    }
-
-    // Sort chronologically and strip internal fields
-    const matched = Array.from(seen.values())
-      .sort((a, b) => new Date(a.published_at).getTime() - new Date(b.published_at).getTime())
-      .map(({ score: _score, embedding: _emb, ...rest }) => rest);
-
-    res.json({ articles: matched });
+    res.json({ articles: result.rows });
   } catch (err) {
     console.error('Timeline error:', err);
     res.status(500).json({ error: 'Failed to build timeline' });

@@ -1,1 +1,0 @@
-ALTER TABLE articles ADD COLUMN IF NOT EXISTS full_text TEXT;

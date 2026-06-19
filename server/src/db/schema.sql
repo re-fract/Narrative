@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS stories (
     expansion_built_at_count    INTEGER DEFAULT 0,
     summary_built_at_count      INTEGER DEFAULT 0,
     first_seen_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_updated_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    last_updated_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    frozen_at                   TIMESTAMP
 );
 
 -- Individual articles ingested from feeds
