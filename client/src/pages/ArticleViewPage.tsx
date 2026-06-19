@@ -75,18 +75,6 @@ function ParsedArticleBody({ text, source, publishedAt }: ParsedArticleBodyProps
           )
         }
 
-        // First paragraph (lead / stand-first) gets larger, lighter text
-        if (index === 0) {
-          return (
-            <p
-              key={index}
-              className="text-lg leading-relaxed text-on-surface-variant/90 font-serif"
-            >
-              {trimmed}
-            </p>
-          )
-        }
-
         // Standard paragraph
         return (
           <p
@@ -162,6 +150,13 @@ function ArticleViewPage() {
   }
 
   useEffect(() => {
+    // Reset all reading-mode state on navigation so the new story always
+    // opens in 'original' mode with a clean simplify cache.
+    // Without this, mode stays 'simple' and the stale cache blocks re-fetching.
+    setMode('original')
+    setSimplifyCache({})
+    setSimplifyError(null)
+    setTimelineArticles([])
     fetchStory()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
@@ -244,7 +239,7 @@ function ArticleViewPage() {
 
             {/* Headline + Byline */}
             <header className="flex flex-col gap-2">
-              <h1 className="font-display text-4xl md:text-5xl lg:text-6xl font-black leading-tight text-primary">
+              <h1 className="font-display text-3xl md:text-4xl lg:text-5xl font-black leading-tight text-primary">
                 {(!story.title || story.title === 'Untitled') ? (articles[0]?.title ?? 'Loading…') : story.title}
               </h1>
               <div className="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant">
@@ -273,7 +268,7 @@ function ArticleViewPage() {
               ) : timelineArticles.length === 0 ? (
                 <p className="text-on-surface-variant text-sm font-body-md">No coverage history found for this story yet.</p>
               ) : (
-                <div className="border-l-2 border-outline-variant pl-4 ml-2 flex flex-col gap-2">
+                <div className={`border-l-2 border-outline-variant pl-4 ml-2 flex flex-col gap-2${timelineArticles.length > 3 ? ' max-h-[480px] overflow-y-auto pr-2' : ''}`}>
                   {(() => {
                     // Group articles by date for clear timeline progression
                     const groups: { label: string; articles: typeof timelineArticles }[] = []
@@ -324,6 +319,12 @@ function ArticleViewPage() {
                   })()}
                 </div>
               )}
+            </div>
+
+            {/* Divider between timeline and article body */}
+            <div className="flex items-center gap-3 border-t border-outline-variant pt-6">
+              <span className="font-label-caps text-label-caps text-on-surface-variant tracking-widest">Article</span>
+              <div className="flex-1 h-px bg-outline-variant" />
             </div>
 
             {/* Article Body */}
