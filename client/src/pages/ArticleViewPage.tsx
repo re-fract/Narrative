@@ -148,7 +148,11 @@ function ArticleViewPage() {
         const key = `${article.source_name}::${localDate}`
         seen.set(key, article)
       }
-      setTimelineArticles(Array.from(seen.values()))
+      // Filter out articles belonging to the current story, sort newest first
+      const filtered = Array.from(seen.values())
+        .filter((article) => article.story_id !== Number(id))
+        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
+      setTimelineArticles(filtered)
     } catch {
       // silently fail — timeline is non-critical
     } finally {
@@ -273,6 +277,7 @@ function ArticleViewPage() {
                   {timelineArticles.map((article) => (
                     <TimelineItem
                       key={article.id}
+                      articleId={article.story_id ?? undefined}
                       category={article.source_name || 'News Source'}
                       time={article.published_at
                         ? new Date(article.published_at).toLocaleDateString('en-GB', {

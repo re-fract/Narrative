@@ -159,7 +159,7 @@ router.get('/:id/timeline', async (req, res) => {
     if (!centroidRaw) {
       // No centroid stored — fall back to articles directly linked to story
       const fallback = await pool.query(
-        `SELECT a.id, a.title, a.url, a.published_at, s.name as source_name
+        `SELECT a.id, a.story_id, a.title, a.url, a.published_at, s.name as source_name
          FROM articles a
          JOIN sources s ON a.source_id = s.id
          WHERE a.story_id = $1
@@ -177,13 +177,14 @@ router.get('/:id/timeline', async (req, res) => {
     const cutoff = new Date(Date.now() - DAYS_BACK * 24 * 60 * 60 * 1000);
     const articlesResult = await pool.query<{
       id: number;
+      story_id: number;
       title: string;
       url: string;
       published_at: string;
       source_name: string;
       embedding: string;
     }>(
-      `SELECT a.id, a.title, a.url, a.published_at, s.name as source_name, a.embedding
+      `SELECT a.id, a.story_id, a.title, a.url, a.published_at, s.name as source_name, a.embedding
        FROM articles a
        JOIN sources s ON a.source_id = s.id
        WHERE a.fetched_at >= $1

@@ -51,6 +51,7 @@ export interface StoryResponse {
 
 export interface TimelineArticle {
   id: number
+  story_id: number | null
   title: string
   url: string
   published_at: string

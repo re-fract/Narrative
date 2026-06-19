@@ -1,9 +1,12 @@
+import { Link } from 'react-router-dom';
+
 interface TimelineItemProps {
   category: string;
   time: string;
   headline: string;
   description: string;
   hasActions?: boolean;
+  articleId?: number;
 }
 
 export default function TimelineItem({
@@ -12,8 +15,9 @@ export default function TimelineItem({
   headline,
   description,
   hasActions,
+  articleId,
 }: TimelineItemProps) {
-  return (
+  const content = (
     <article className="bg-surface border border-outline-variant p-stack-md hover:bg-surface-container-low transition-colors duration-200 group relative">
       <div className="flex justify-between items-start mb-2">
         <div className="flex items-center gap-2">
@@ -26,7 +30,8 @@ export default function TimelineItem({
         </div>
         <button
           aria-label="Bookmark"
-          className="text-on-surface-variant hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity"
+          className="text-on-surface-variant hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity z-10"
+          onClick={(e) => e.stopPropagation()}
         >
           <span className="material-symbols-outlined text-[20px]">bookmark</span>
         </button>
@@ -61,5 +66,15 @@ export default function TimelineItem({
         </div>
       )}
     </article>
-  )
+  );
+
+  if (articleId) {
+    return (
+      <Link to={`/article/${articleId}`} className="block">
+        {content}
+      </Link>
+    );
+  }
+
+  return content;
 }

@@ -75,23 +75,23 @@ function HomePage() {
       )}
 
       {isLoading && (
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-gutter">
-          <div className="md:col-span-8">
-            <div className="rounded bg-surface-container-high animate-pulse h-96" />
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-gutter mb-gutter">
+            <div className="md:col-span-8">
+              <div className="rounded bg-surface-container-high animate-pulse h-96" />
+            </div>
+            <div className="md:col-span-4">
+              <div className="rounded bg-surface-container-high animate-pulse h-96" />
+            </div>
           </div>
-          <div className="md:col-span-4">
-            <div className="rounded bg-surface-container-high animate-pulse h-96" />
+          <div className="columns-1 md:columns-3 gap-gutter">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="break-inside-avoid mb-gutter">
+                <div className="rounded bg-surface-container-high animate-pulse h-64" />
+              </div>
+            ))}
           </div>
-          <div className="md:col-span-4">
-            <div className="rounded bg-surface-container-high animate-pulse h-64" />
-          </div>
-          <div className="md:col-span-4">
-            <div className="rounded bg-surface-container-high animate-pulse h-64" />
-          </div>
-          <div className="md:col-span-4">
-            <div className="rounded bg-surface-container-high animate-pulse h-64" />
-          </div>
-        </div>
+        </>
       )}
 
       {!isLoading && !error && stories.length === 0 && (
@@ -103,50 +103,53 @@ function HomePage() {
       )}
 
       {!isLoading && !error && stories.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-gutter">
-          {/* Featured */}
-          {featured && (
-            <div className="md:col-span-8">
-              <Link to={`/article/${featured.id}`} className="block">
-                <BriefCard
-                  category={featured.category}
-                  timeAgo={featured.timeAgo}
-                  headline={featured.title}
-                  bullets={featured.bullets}
-                  variant="featured"
-                />
-              </Link>
-            </div>
-          )}
-          {/* Secondary */}
-          {secondary && (
-            <div className="md:col-span-4">
-              <Link to={`/article/${secondary.id}`} className="block">
-                <BriefCard
-                  category={secondary.category}
-                  timeAgo={secondary.timeAgo}
-                  headline={secondary.title}
-                  bullets={secondary.bullets}
-                  variant="secondary"
-                />
-              </Link>
-            </div>
-          )}
-          {/* Tertiary */}
-          {stories.slice(2).map((story) => (
-            <div key={story.id} className="md:col-span-4">
-              <Link to={`/article/${story.id}`} className="block">
-                <BriefCard
-                  category={story.category}
-                  timeAgo={story.timeAgo}
-                  headline={story.title}
-                  bullets={story.bullets}
-                  variant="tertiary"
-                />
-              </Link>
-            </div>
-          ))}
-        </div>
+        <>
+          {/* Featured + Secondary */}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-gutter mb-gutter">
+            {featured && (
+              <div className="md:col-span-8">
+                <Link to={`/article/${featured.id}`} className="block">
+                  <BriefCard
+                    category={featured.category}
+                    timeAgo={featured.timeAgo}
+                    headline={featured.title}
+                    bullets={featured.bullets}
+                    variant="featured"
+                  />
+                </Link>
+              </div>
+            )}
+            {secondary && (
+              <div className="md:col-span-4">
+                <Link to={`/article/${secondary.id}`} className="block">
+                  <BriefCard
+                    category={secondary.category}
+                    timeAgo={secondary.timeAgo}
+                    headline={secondary.title}
+                    bullets={secondary.bullets}
+                    variant="secondary"
+                  />
+                </Link>
+              </div>
+            )}
+          </div>
+          {/* Tertiary - masonry columns */}
+          <div className="columns-1 md:columns-3 gap-gutter">
+            {stories.slice(2).map((story) => (
+              <div key={story.id} className="break-inside-avoid mb-gutter">
+                <Link to={`/article/${story.id}`} className="block">
+                  <BriefCard
+                    category={story.category}
+                    timeAgo={story.timeAgo}
+                    headline={story.title}
+                    bullets={story.bullets}
+                    variant="tertiary"
+                  />
+                </Link>
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   )
