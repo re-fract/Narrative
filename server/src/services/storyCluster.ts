@@ -18,7 +18,7 @@ export interface ArticleWithEmbedding {
   embedding: number[];
 }
 
-const SIMILARITY_THRESHOLD = 0.82;
+const SIMILARITY_THRESHOLD = 0.75; // Must match briefs.ts clustering threshold and stories.ts timeline threshold
 
 export function findSimilarStory(
   embedding: number[],

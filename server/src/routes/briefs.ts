@@ -159,7 +159,7 @@ async function getOrCreateBrief() {
     );
 
     // Cluster the articles among themselves
-    const SIMILARITY_THRESHOLD = 0.80; // Allow slight variations to group together
+    const SIMILARITY_THRESHOLD = 0.75; // Must match timeline threshold in stories.ts to prevent gap-zone articles (story_id=NULL)
     interface Cluster {
       articles: typeof insertedArticles;
       centroid: number[];
