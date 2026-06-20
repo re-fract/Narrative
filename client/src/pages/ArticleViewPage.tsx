@@ -3,90 +3,9 @@ import { useParams } from 'react-router-dom'
 import { getArticle, getStorySimplify, getStoryTimeline } from '../api/client'
 import type { ArticleItem, TimelineArticle } from '../api/client'
 import SimplifyToggle, { type SimplifyMode } from '../components/SimplifyToggle'
-import TimelineItem from '../components/TimelineItem'
-
-interface ParsedArticleBodyProps {
-  text: string
-  source?: string
-}
-
-function isBylineBlock(text: string, source?: string): boolean {
-  const trimmed = text.trim()
-  if (!trimmed || trimmed.length > 150) return false
-
-  // "By Author Name" pattern
-  if (/^by\s+\w+/i.test(trimmed)) return true
-  // Starts with author bullets like "BBC News Ireland" or contains role/title
-  if (/reporter|correspondent|editor|analyst|writer|staff writer/i.test(trimmed) && trimmed.length < 150) return true
-  // Contains the source name (e.g. "BBC News") and is short
-  if (source && new RegExp(source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(trimmed)) return true
-
-  // Matches a time ago string: "2 hours ago", "6 June 2025"
-  if (/\d+\s+(hour|minute|day|week|month|year)s?\s+ago/i.test(trimmed)) return true
-  if (/\d{1,2}\s+(january|february|march|april|may|june|july|august|september|october|november|december)/i.test(trimmed)) return true
-
-  return false
-}
-
-function stripLeadingBylines(text: string, source?: string): string {
-  if (!text) return text
-  const blocks = text.split(/\n\n+/).filter((b) => b.trim().length > 0)
-  const cleaned: string[] = []
-  let skipped = 0
-  const maxSkip = 4
-
-  for (const block of blocks) {
-    if (skipped >= maxSkip) {
-      cleaned.push(block)
-      continue
-    }
-    if (isBylineBlock(block, source)) {
-      skipped++
-      continue
-    }
-    cleaned.push(block)
-  }
-
-  return cleaned.join('\n\n')
-}
-
-function ParsedArticleBody({ text, source }: ParsedArticleBodyProps) {
-  if (!text) return <p className="text-on-surface-variant">Article content unavailable.</p>
-
-  const cleanText = stripLeadingBylines(text, source)
-  const blocks = cleanText.split(/\n\n+/).filter((b) => b.trim().length > 0)
-
-  return (
-    <div className="flex flex-col gap-6">
-      {blocks.map((block, index) => {
-        const trimmed = block.trim()
-
-        // Heading marker from articleScraper.ts
-        if (trimmed.startsWith('###HEADING:###')) {
-          const headingText = trimmed.replace('###HEADING:###', '').trim()
-          return (
-            <h2
-              key={index}
-              className="font-sans text-xl font-extrabold text-on-surface mt-4 mb-2 leading-snug tracking-tight"
-            >
-              {headingText}
-            </h2>
-          )
-        }
-
-        // Standard paragraph
-        return (
-          <p
-            key={index}
-            className="text-lg leading-[1.72] text-on-surface font-serif"
-          >
-            {trimmed}
-          </p>
-        )
-      })}
-    </div>
-  )
-}
+import ParsedArticleBody from '../components/ParsedArticleBody'
+import ArticleTimeline from '../components/ArticleTimeline'
+import ArticleSidebar from '../components/ArticleSidebar'
 
 function ArticleViewPage() {
   const { id } = useParams<{ id: string }>()
@@ -98,7 +17,6 @@ function ArticleViewPage() {
   const [simplifyCache, setSimplifyCache] = useState<Record<string, string>>({})
   const [simplifyLoading, setSimplifyLoading] = useState(false)
   const [simplifyError, setSimplifyError] = useState<string | null>(null)
-  const [chatInput, setChatInput] = useState('')
   const [timelineArticles, setTimelineArticles] = useState<TimelineArticle[]>([])
   const [timelineLoading, setTimelineLoading] = useState(false)
   const [resolvedStoryId, setResolvedStoryId] = useState<number | null>(null)
@@ -106,6 +24,9 @@ function ArticleViewPage() {
   const fetchTimeline = async (storyId: number, fetchId: number) => {
     setTimelineLoading(true)
     try {
+      // Artificial delay to prevent UI flickering and make the transition feel smoother
+      await new Promise(resolve => setTimeout(resolve, 400))
+      
       const res = await getStoryTimeline(storyId)
       if (fetchId !== activeFetchIdRef.current) return
       // Sort newest first — backend returns oldest→newest
@@ -132,6 +53,9 @@ function ArticleViewPage() {
     setTimelineLoading(true)
     setError(null)
     try {
+      // Artificial delay to prevent UI flickering when navigating between timeline items
+      await new Promise(resolve => setTimeout(resolve, 500))
+
       const res = await getArticle(Number(id))
       if (fetchId !== activeFetchIdRef.current) return
 
@@ -268,68 +192,11 @@ function ArticleViewPage() {
             </header>
 
             {/* News History Timeline */}
-            <div className="flex flex-col gap-4 mt-4">
-              <h3 className="font-display text-2xl font-bold text-primary mb-2">Timeline</h3>
-              {timelineLoading ? (
-                <div className="flex items-center gap-2 text-on-surface-variant">
-                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-secondary border-t-transparent"></span>
-                  <span className="font-body-md text-sm">Loading 14-day history...</span>
-                </div>
-              ) : timelineArticles.length === 0 ? (
-                <p className="text-on-surface-variant text-sm font-body-md">No coverage history found for this story yet.</p>
-              ) : (
-                <div className={`border-l-2 border-outline-variant pl-4 ml-2 flex flex-col gap-2${timelineArticles.length > 3 ? ' max-h-[480px] overflow-y-auto pr-2' : ''}`}>
-                  {(() => {
-                    // Group articles by date for clear timeline progression
-                    const groups: { label: string; articles: typeof timelineArticles }[] = []
-                    let currentLabel = ''
-                    for (const article of timelineArticles) {
-                      const dateLabel = article.published_at
-                        ? new Date(article.published_at).toLocaleDateString('en-GB', {
-                          weekday: 'short',
-                          day: 'numeric',
-                          month: 'long',
-                          year: 'numeric',
-                        })
-                        : 'Unknown Date'
-                      if (dateLabel !== currentLabel) {
-                        currentLabel = dateLabel
-                        groups.push({ label: dateLabel, articles: [] })
-                      }
-                      groups[groups.length - 1].articles.push(article)
-                    }
-
-                    return groups.map((group) => (
-                      <div key={group.label} className="flex flex-col gap-3">
-                        {/* Date separator */}
-                        <div className="flex items-center gap-3 pt-3 first:pt-0">
-                          <div className="w-3 h-3 rounded-full bg-secondary -ml-[1.625rem] border-2 border-surface shrink-0" />
-                          <span className="font-label-caps text-label-caps text-secondary tracking-wider">
-                            {group.label}
-                          </span>
-                        </div>
-                        {group.articles.map((timelineArticle) => (
-                          <TimelineItem
-                            key={timelineArticle.id}
-                            articleId={timelineArticle.id}
-                            isActive={timelineArticle.id === article.id}
-                            category={timelineArticle.source_name || 'News Source'}
-                            time={timelineArticle.published_at
-                              ? new Date(timelineArticle.published_at).toLocaleTimeString('en-GB', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })
-                              : ''}
-                            headline={timelineArticle.title}
-                            description=""
-                          />
-                        ))}
-                      </div>
-                    ))
-                  })()}
-                </div>
-              )}
-            </div>
+            <ArticleTimeline 
+              timelineLoading={timelineLoading} 
+              timelineArticles={timelineArticles} 
+              currentArticleId={article.id} 
+            />
 
             {/* Divider between timeline and article body */}
             <div className="flex items-center gap-3 border-t border-outline-variant pt-6">
@@ -395,87 +262,7 @@ function ArticleViewPage() {
       </main>
 
       {/* AI Chat Sidebar */}
-      <aside className="hidden md:flex fixed right-0 top-16 bottom-0 w-80 bg-surface-container-low border-l border-outline-variant flex-col z-40">
-        {/* Sidebar Header */}
-        <header className="mb-stack-md shrink-0 flex flex-col gap-1 p-stack-md border-b border-outline-variant">
-          <h2 className="font-display text-headline-sm font-semibold text-primary">AI Insights</h2>
-          <span className="font-caption text-caption text-on-surface-variant uppercase tracking-wider">
-            Article Analysis
-          </span>
-        </header>
-
-        {/* Tabs */}
-        <nav className="flex items-center gap-2 overflow-x-auto pb-stack-sm border-b border-outline-variant px-stack-md shrink-0 mb-stack-md">
-          <button className="flex items-center gap-1.5 px-3 py-1.5 text-on-surface-variant hover:bg-surface-variant rounded transition-all font-label-caps text-label-caps whitespace-nowrap">
-            <span className="material-symbols-outlined text-[16px]">info</span> Context
-          </button>
-          <button className="flex items-center gap-1.5 px-3 py-1.5 bg-secondary-container text-on-secondary-container rounded-lg font-label-caps text-label-caps whitespace-nowrap">
-            <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }}>auto_awesome</span> Summary
-          </button>
-          <button className="flex items-center gap-1.5 px-3 py-1.5 text-on-surface-variant hover:bg-surface-variant rounded transition-all font-label-caps text-label-caps whitespace-nowrap">
-            <span className="material-symbols-outlined text-[16px]">list_alt</span> Key Facts
-          </button>
-          <button className="flex items-center gap-1.5 px-3 py-1.5 text-on-surface-variant hover:bg-surface-variant rounded transition-all font-label-caps text-label-caps whitespace-nowrap">
-            <span className="material-symbols-outlined text-[16px]">history</span> Timeline
-          </button>
-        </nav>
-
-        {/* Chat Body */}
-        <div className="flex-grow flex flex-col gap-4 overflow-y-auto px-stack-md pb-4 overflow-x-hidden">
-          {/* System/AI initial message */}
-          <div className="self-start max-w-[95%] text-on-surface p-4 rounded-xl rounded-tl-sm font-body-md text-body-md border border-outline-variant bg-surface">
-            <div className="flex items-center gap-2 mb-2 font-label-caps text-label-caps text-secondary">
-              <span className="material-symbols-outlined text-[14px]">robot_2</span> Assistant
-            </div>
-            <p className="mb-2">
-              I have analyzed the article &ldquo;Placeholder Article Title&rdquo;. What
-              specific insights would you like to explore?
-            </p>
-            <div className="flex flex-wrap gap-2 mt-3">
-              <button className="px-2 py-1 text-xs border border-outline-variant rounded hover:border-secondary hover:text-secondary transition-colors text-on-surface-variant">
-                Extract Key Entities
-              </button>
-              <button className="px-2 py-1 text-xs border border-outline-variant rounded hover:border-secondary hover:text-secondary transition-colors text-on-surface-variant">
-                Identify Biases
-              </button>
-            </div>
-          </div>
-
-          {/* User Message */}
-          <div className="self-end max-w-[85%] bg-surface-container-highest text-on-surface p-3 rounded-xl rounded-tr-sm font-body-md text-body-md shadow-sm">
-            Summarize the financial impact of this story.
-          </div>
-
-          {/* AI Response Message */}
-          <div className="self-start max-w-[95%] bg-secondary/5 border border-secondary/20 text-on-surface p-4 rounded-xl rounded-tl-sm font-body-md text-body-md">
-            <div className="flex items-center gap-2 mb-2 font-label-caps text-label-caps text-secondary">
-              <span className="material-symbols-outlined text-[14px]">auto_awesome</span> Synthesis
-            </div>
-            <p className="mb-2">
-              This is a placeholder AI synthesis of the article.
-            </p>
-          </div>
-        </div>
-
-        {/* Chat Input */}
-        <div className="shrink-0 pt-stack-sm bg-surface-container-low border-t border-outline-variant mt-auto relative p-stack-md">
-          <div className="relative flex items-center bg-surface border border-outline-variant focus-within:border-secondary focus-within:ring-1 focus-within:ring-secondary transition-all">
-            <input
-              className="w-full bg-transparent border-none py-3 pl-4 pr-12 font-body-md text-body-md text-on-surface focus:ring-0 focus:outline-none placeholder:text-outline"
-              placeholder="Ask AI..."
-              type="text"
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-            />
-            <button className="absolute right-2 p-1.5 bg-primary text-on-primary hover:bg-surface-tint transition-colors flex items-center justify-center">
-              <span className="material-symbols-outlined text-[18px]">arrow_upward</span>
-            </button>
-          </div>
-          <div className="text-center mt-2 font-caption text-[10px] text-on-surface-variant">
-            AI can make mistakes. Verify important information.
-          </div>
-        </div>
-      </aside>
+      <ArticleSidebar />
     </div>
   )
 }
