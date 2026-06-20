@@ -11,22 +11,24 @@ async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
 
 // ─── Types ───
 
-export interface BriefStory {
+export interface BriefArticle {
   id: number
   title: string
   bullets: string[]
-  sourceCount: number
+  storyId: number | null
+  sourceName: string
   category: string
   timeAgo: string
 }
 
 export interface BriefResponse {
   date: string
-  stories: BriefStory[]
+  articles: BriefArticle[]
 }
 
 export interface ArticleItem {
   id: number
+  story_id: number | null
   title: string
   url: string
   body: string
@@ -35,18 +37,8 @@ export interface ArticleItem {
   source_name: string
 }
 
-export interface StoryDetail {
-  id: number
-  title: string
-  summary: string
-  article_count: number
-  first_seen_at: string
-  last_updated_at: string
-}
-
-export interface StoryResponse {
-  story: StoryDetail
-  articles: ArticleItem[]
+export interface ArticleResponse {
+  article: ArticleItem
 }
 
 export interface TimelineArticle {
@@ -95,8 +87,8 @@ export function getBriefToday(): Promise<BriefResponse> {
   return apiRequest<BriefResponse>('/briefs/today')
 }
 
-export function getStory(id: string | number): Promise<StoryResponse> {
-  return apiRequest<StoryResponse>(`/stories/${id}`)
+export function getArticle(id: string | number): Promise<ArticleResponse> {
+  return apiRequest<ArticleResponse>(`/articles/${id}`)
 }
 
 export function getStoryTimeline(id: string | number): Promise<TimelineResponse> {

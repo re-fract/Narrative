@@ -23,6 +23,7 @@ export interface ArticleRow {
   embedding: number[] | null;
   published_at: Date | null;
   fetched_at: Date;
+  summary?: string | null;
 }
 
 export interface StoryRow {

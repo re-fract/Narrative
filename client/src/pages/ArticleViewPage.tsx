@@ -1,17 +1,16 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { getStory, getStorySimplify, getStoryTimeline } from '../api/client'
-import type { StoryResponse, TimelineArticle } from '../api/client'
+import { getArticle, getStorySimplify, getStoryTimeline } from '../api/client'
+import type { ArticleItem, TimelineArticle } from '../api/client'
 import SimplifyToggle, { type SimplifyMode } from '../components/SimplifyToggle'
 import TimelineItem from '../components/TimelineItem'
 
 interface ParsedArticleBodyProps {
   text: string
   source?: string
-  publishedAt?: string
 }
 
-function isBylineBlock(text: string, source?: string, publishedAt?: string): boolean {
+function isBylineBlock(text: string, source?: string): boolean {
   const trimmed = text.trim()
   if (!trimmed || trimmed.length > 150) return false
 
@@ -29,7 +28,7 @@ function isBylineBlock(text: string, source?: string, publishedAt?: string): boo
   return false
 }
 
-function stripLeadingBylines(text: string, source?: string, publishedAt?: string): string {
+function stripLeadingBylines(text: string, source?: string): string {
   if (!text) return text
   const blocks = text.split(/\n\n+/).filter((b) => b.trim().length > 0)
   const cleaned: string[] = []
@@ -41,7 +40,7 @@ function stripLeadingBylines(text: string, source?: string, publishedAt?: string
       cleaned.push(block)
       continue
     }
-    if (isBylineBlock(block, source, publishedAt)) {
+    if (isBylineBlock(block, source)) {
       skipped++
       continue
     }
@@ -51,10 +50,10 @@ function stripLeadingBylines(text: string, source?: string, publishedAt?: string
   return cleaned.join('\n\n')
 }
 
-function ParsedArticleBody({ text, source, publishedAt }: ParsedArticleBodyProps) {
+function ParsedArticleBody({ text, source }: ParsedArticleBodyProps) {
   if (!text) return <p className="text-on-surface-variant">Article content unavailable.</p>
 
-  const cleanText = stripLeadingBylines(text, source, publishedAt)
+  const cleanText = stripLeadingBylines(text, source)
   const blocks = cleanText.split(/\n\n+/).filter((b) => b.trim().length > 0)
 
   return (
@@ -91,7 +90,8 @@ function ParsedArticleBody({ text, source, publishedAt }: ParsedArticleBodyProps
 
 function ArticleViewPage() {
   const { id } = useParams<{ id: string }>()
-  const [data, setData] = useState<StoryResponse | null>(null)
+  const activeFetchIdRef = useRef(0)
+  const [article, setArticle] = useState<ArticleItem | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [mode, setMode] = useState<SimplifyMode>('original')
@@ -101,21 +101,13 @@ function ArticleViewPage() {
   const [chatInput, setChatInput] = useState('')
   const [timelineArticles, setTimelineArticles] = useState<TimelineArticle[]>([])
   const [timelineLoading, setTimelineLoading] = useState(false)
-  // currentArticleId is the specific article shown (equals URL param when navigating via article id;
-  // equals the latest article id when navigating via story id from the brief)
-  const [currentArticleId, setCurrentArticleId] = useState<number | null>(null)
-  // The real story ID returned by the backend — may differ from the URL param when
-  // the URL contains an article ID rather than a story ID (timeline navigation).
-  // All secondary API calls (simplify, expand) must use this, not Number(id).
   const [resolvedStoryId, setResolvedStoryId] = useState<number | null>(null)
 
-  const story = data?.story
-  const articles = data?.articles ?? []
-
-  const fetchTimeline = async (storyId: number) => {
+  const fetchTimeline = async (storyId: number, fetchId: number) => {
     setTimelineLoading(true)
     try {
       const res = await getStoryTimeline(storyId)
+      if (fetchId !== activeFetchIdRef.current) return
       // Sort newest first — backend returns oldest→newest
       const sorted = res.articles
         .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
@@ -123,32 +115,43 @@ function ArticleViewPage() {
     } catch {
       // silently fail — timeline is non-critical
     } finally {
-      setTimelineLoading(false)
+      if (fetchId === activeFetchIdRef.current) {
+        setTimelineLoading(false)
+      }
     }
   }
 
-  const fetchStory = async () => {
+  const fetchArticle = async () => {
     if (!id) {
-      setError('Failed to load story')
+      setError('Failed to load article')
       setLoading(false)
       return
     }
+    const fetchId = ++activeFetchIdRef.current
     setLoading(true)
+    setTimelineLoading(true)
     setError(null)
     try {
-      const res = await getStory(Number(id))
-      setData(res)
-      // Track which specific article is being viewed:
-      // - If loaded via story ID (from brief): show the most recent article (first after DESC sort)
-      // - If loaded via article ID (from timeline): articles array has exactly 1 item
-      const viewedArticleId = res.articles[0]?.id ?? null
-      setCurrentArticleId(viewedArticleId)
-      setResolvedStoryId(res.story.id)
-      fetchTimeline(res.story.id)
+      const res = await getArticle(Number(id))
+      if (fetchId !== activeFetchIdRef.current) return
+
+      setArticle(res.article)
+      setResolvedStoryId(res.article.story_id)
+
+      if (res.article.story_id) {
+        fetchTimeline(res.article.story_id, fetchId)
+      } else {
+        setTimelineArticles([])
+        setTimelineLoading(false)
+      }
+
     } catch {
-      setError('Failed to load story')
+      if (fetchId !== activeFetchIdRef.current) return
+      setError('Failed to load article')
     } finally {
-      setLoading(false)
+      if (fetchId === activeFetchIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -159,9 +162,10 @@ function ArticleViewPage() {
     setMode('original')
     setSimplifyCache({})
     setSimplifyError(null)
+    setArticle(null)
     setTimelineArticles([])
     setResolvedStoryId(null)
-    fetchStory()
+    fetchArticle()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
@@ -181,8 +185,8 @@ function ArticleViewPage() {
     setSimplifyLoading(true)
     setSimplifyError(null)
     try {
-      const storyId = resolvedStoryId ?? Number(id)
-      const articleIdForSimplify = data?.articles?.[0]?.id
+      const storyId = resolvedStoryId ?? article?.story_id ?? article?.id ?? Number(id)
+      const articleIdForSimplify = article?.id
       const res = await getStorySimplify(storyId, 'simple', articleIdForSimplify)
       setSimplifyCache((prev) => ({ ...prev, simple: res.text }))
     } catch {
@@ -192,8 +196,8 @@ function ArticleViewPage() {
     }
   }
 
-  const storyDate = story
-    ? new Date(story.first_seen_at).toLocaleDateString('en-US', {
+  const articleDate = article?.published_at
+    ? new Date(article.published_at).toLocaleDateString('en-US', {
       month: 'long',
       day: 'numeric',
       year: 'numeric',
@@ -221,11 +225,11 @@ function ArticleViewPage() {
             </div>
             <div className="animate-pulse bg-surface-container h-10 w-48 rounded"></div>
           </div>
-        ) : error || !story ? (
+        ) : error || !article ? (
           <div className="px-margin-mobile md:px-margin-desktop py-section-gap max-w-3xl mx-auto flex flex-col gap-stack-lg items-center justify-center min-h-[50vh]">
-            <p className="font-body-lg text-body-lg text-on-surface">Failed to load story</p>
+            <p className="font-body-lg text-body-lg text-on-surface">Failed to load article</p>
             <button
-              onClick={fetchStory}
+              onClick={fetchArticle}
               className="px-6 py-3 border border-primary text-primary font-label-md text-label-md hover:bg-surface-container-low transition-colors duration-200"
             >
               Retry
@@ -238,7 +242,7 @@ function ArticleViewPage() {
               <div className="flex items-center gap-3 font-label-caps text-label-caps text-on-surface-variant tracking-widest">
                 <span>BUSINESS &amp; MARKETS</span>
                 <span className="w-1 h-1 bg-outline-variant rounded-full"></span>
-                <span>{storyDate}</span>
+                <span>{articleDate}</span>
               </div>
               <SimplifyToggle mode={mode} onChange={handleModeChange} />
             </div>
@@ -246,16 +250,16 @@ function ArticleViewPage() {
             {/* Headline + Byline */}
             <header className="flex flex-col gap-2">
               <h1 className="font-display text-3xl md:text-4xl lg:text-5xl font-black leading-tight text-primary">
-                {(!story.title || story.title === 'Untitled') ? (articles[0]?.title ?? 'Loading…') : story.title}
+                {article.title}
               </h1>
               <div className="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant">
-                <time dateTime={articles[0]?.published_at ?? story.first_seen_at}>
-                  {new Date(articles[0]?.published_at ?? story.first_seen_at).toLocaleDateString('en-GB', {
+                <time dateTime={article.published_at}>
+                  {new Date(article.published_at).toLocaleDateString('en-GB', {
                     day: 'numeric',
                     month: 'long',
                     year: 'numeric',
                   })}{' '}
-                  {new Date(articles[0]?.published_at ?? story.first_seen_at).toLocaleTimeString('en-GB', {
+                  {new Date(article.published_at).toLocaleTimeString('en-GB', {
                     hour: '2-digit',
                     minute: '2-digit',
                   })}
@@ -269,7 +273,7 @@ function ArticleViewPage() {
               {timelineLoading ? (
                 <div className="flex items-center gap-2 text-on-surface-variant">
                   <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-secondary border-t-transparent"></span>
-                  <span className="font-body-md text-sm">Loading 7-day history...</span>
+                  <span className="font-body-md text-sm">Loading 14-day history...</span>
                 </div>
               ) : timelineArticles.length === 0 ? (
                 <p className="text-on-surface-variant text-sm font-body-md">No coverage history found for this story yet.</p>
@@ -304,19 +308,19 @@ function ArticleViewPage() {
                             {group.label}
                           </span>
                         </div>
-                        {group.articles.map((article) => (
+                        {group.articles.map((timelineArticle) => (
                           <TimelineItem
-                            key={article.id}
-                            articleId={article.id}
-                            isActive={article.id === currentArticleId}
-                            category={article.source_name || 'News Source'}
-                            time={article.published_at
-                              ? new Date(article.published_at).toLocaleTimeString('en-GB', {
+                            key={timelineArticle.id}
+                            articleId={timelineArticle.id}
+                            isActive={timelineArticle.id === article.id}
+                            category={timelineArticle.source_name || 'News Source'}
+                            time={timelineArticle.published_at
+                              ? new Date(timelineArticle.published_at).toLocaleTimeString('en-GB', {
                                 hour: '2-digit',
                                 minute: '2-digit',
                               })
                               : ''}
-                            headline={article.title}
+                            headline={timelineArticle.title}
                             description=""
                           />
                         ))}
@@ -354,10 +358,7 @@ function ArticleViewPage() {
               <ParsedArticleBody text={displayText} />
             ) : null}
             {(mode === 'original' || simplifyError) && (() => {
-              // Always show only the single displayed article (articles[0]).
-              // When navigating via story ID from brief: articles[0] is the most recent.
-              // When navigating via article ID from timeline: articles[0] is the specific article.
-              const displayArticle = articles[0]
+              const displayArticle = article
               if (!displayArticle) {
                 return (
                   <div className="font-body text-body-lg text-on-surface-variant italic">
@@ -370,7 +371,6 @@ function ArticleViewPage() {
                   <ParsedArticleBody
                     text={displayArticle.full_text || displayArticle.body || 'Original article content unavailable.'}
                     source={displayArticle.source_name}
-                    publishedAt={displayArticle.published_at}
                   />
                 </div>
               )
@@ -379,10 +379,10 @@ function ArticleViewPage() {
             {/* Footer Actions */}
             <div className="pt-section-gap pb-stack-lg border-t border-outline-variant flex flex-col sm:flex-row gap-4 items-center justify-between">
               <div className="font-caption text-caption text-on-surface-variant">
-                {articles[0]?.source_name ?? ''}
+                {article.source_name ?? ''}
               </div>
               <a
-                href={articles[0]?.url}
+                href={article.url}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="px-6 py-3 border border-primary text-primary font-label-md text-label-md hover:bg-surface-container-low transition-colors duration-200"
@@ -428,7 +428,7 @@ function ArticleViewPage() {
               <span className="material-symbols-outlined text-[14px]">robot_2</span> Assistant
             </div>
             <p className="mb-2">
-              I have analyzed the article &ldquo;{story?.title ?? 'Loading...'}&rdquo;. What
+              I have analyzed the article &ldquo;Placeholder Article Title&rdquo;. What
               specific insights would you like to explore?
             </p>
             <div className="flex flex-wrap gap-2 mt-3">
@@ -452,7 +452,7 @@ function ArticleViewPage() {
               <span className="material-symbols-outlined text-[14px]">auto_awesome</span> Synthesis
             </div>
             <p className="mb-2">
-              {story?.summary ?? 'Waiting for story data...'}
+              This is a placeholder AI synthesis of the article.
             </p>
           </div>
         </div>

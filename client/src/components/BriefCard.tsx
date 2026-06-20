@@ -1,5 +1,6 @@
 interface BriefCardProps {
   category: string;
+  sourceName: string;
   timeAgo: string;
   headline: string;
   bullets: string[];
@@ -8,6 +9,7 @@ interface BriefCardProps {
 
 function BriefCard({
   category,
+  sourceName,
   timeAgo,
   headline,
   bullets,
@@ -22,6 +24,10 @@ function BriefCard({
         <div className="flex items-center gap-unit mb-stack-md">
           <span className="font-label-caps text-label-caps text-secondary uppercase">
             {category}
+          </span>
+          <span className="text-outline-variant">•</span>
+          <span className="font-caption text-caption text-on-surface-variant">
+            {sourceName}
           </span>
           <span className="text-outline-variant">•</span>
           <span className="font-caption text-caption text-on-surface-variant">

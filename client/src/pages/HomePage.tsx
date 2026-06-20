@@ -1,35 +1,28 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import BriefCard from '../components/BriefCard'
-
-interface Story {
-  id: number
-  title: string
-  bullets: string[]
-  category: string
-  timeAgo: string
-}
+import type { BriefArticle } from '../api/client'
 
 interface ApiResponse {
   date: string
-  stories: Story[]
+  articles: BriefArticle[]
 }
 
 function HomePage() {
-  const [stories, setStories] = useState<Story[]>([])
+  const [articles, setArticles] = useState<BriefArticle[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const fetchStories = async () => {
+  const fetchBrief = async () => {
     setIsLoading(true)
     setError(null)
     try {
       const res = await fetch('/api/briefs/today')
       if (!res.ok) {
-        throw new Error('Failed to fetch stories')
+        throw new Error('Failed to fetch brief')
       }
       const data: ApiResponse = await res.json()
-      setStories(data.stories)
+      setArticles(data.articles)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
     } finally {
@@ -38,7 +31,7 @@ function HomePage() {
   }
 
   useEffect(() => {
-    fetchStories()
+    fetchBrief()
   }, [])
 
   const todayStr = new Date().toLocaleDateString('en-US', {
@@ -48,8 +41,8 @@ function HomePage() {
     day: 'numeric',
   })
 
-  const featured = stories[0]
-  const secondary = stories[1]
+  const featured = articles[0]
+  const secondary = articles[1]
 
   return (
     <div className="max-w-container-max mx-auto px-margin-mobile md:px-margin-desktop py-stack-lg">
@@ -66,7 +59,7 @@ function HomePage() {
         <div className="flex flex-col items-center justify-center py-20">
           <p className="text-body-md text-on-surface-variant mb-4">{error}</p>
           <button
-            onClick={fetchStories}
+            onClick={fetchBrief}
             className="px-4 py-2 bg-primary text-white rounded hover:opacity-90 transition-opacity"
           >
             Retry
@@ -94,15 +87,15 @@ function HomePage() {
         </>
       )}
 
-      {!isLoading && !error && stories.length === 0 && (
+      {!isLoading && !error && articles.length === 0 && (
         <div className="flex items-center justify-center py-20">
           <p className="text-body-md text-on-surface-variant">
-            No stories today
+            No articles today
           </p>
         </div>
       )}
 
-      {!isLoading && !error && stories.length > 0 && (
+      {!isLoading && !error && articles.length > 0 && (
         <>
           {/* Featured + Secondary */}
           <div className="grid grid-cols-1 md:grid-cols-12 gap-gutter mb-gutter">
@@ -111,6 +104,7 @@ function HomePage() {
                 <Link to={`/article/${featured.id}`} className="block">
                   <BriefCard
                     category={featured.category}
+                    sourceName={featured.sourceName}
                     timeAgo={featured.timeAgo}
                     headline={featured.title}
                     bullets={featured.bullets}
@@ -124,6 +118,7 @@ function HomePage() {
                 <Link to={`/article/${secondary.id}`} className="block">
                   <BriefCard
                     category={secondary.category}
+                    sourceName={secondary.sourceName}
                     timeAgo={secondary.timeAgo}
                     headline={secondary.title}
                     bullets={secondary.bullets}
@@ -135,14 +130,15 @@ function HomePage() {
           </div>
           {/* Tertiary - masonry columns */}
           <div className="columns-1 md:columns-3 gap-gutter">
-            {stories.slice(2).map((story) => (
-              <div key={story.id} className="break-inside-avoid mb-gutter">
-                <Link to={`/article/${story.id}`} className="block">
+            {articles.slice(2).map((article) => (
+              <div key={article.id} className="break-inside-avoid mb-gutter">
+                <Link to={`/article/${article.id}`} className="block">
                   <BriefCard
-                    category={story.category}
-                    timeAgo={story.timeAgo}
-                    headline={story.title}
-                    bullets={story.bullets}
+                    category={article.category}
+                    sourceName={article.sourceName}
+                    timeAgo={article.timeAgo}
+                    headline={article.title}
+                    bullets={article.bullets}
                     variant="tertiary"
                   />
                 </Link>
