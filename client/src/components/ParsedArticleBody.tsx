@@ -1,5 +1,3 @@
-import React from 'react'
-
 interface ParsedArticleBodyProps {
   text: string
   source?: string

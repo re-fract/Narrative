@@ -1,4 +1,3 @@
-import React from 'react'
 import TimelineItem from './TimelineItem'
 import type { TimelineArticle } from '../api/client'
 
