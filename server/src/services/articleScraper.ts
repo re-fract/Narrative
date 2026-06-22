@@ -98,12 +98,103 @@ function withCssWarningsSuppressed<T>(fn: () => T): T {
   }
 }
 
+function textFromElements(document: Document, selectors: string[]): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+
+  for (const selector of selectors) {
+    const elements = document.querySelectorAll(selector);
+    elements.forEach((el) => {
+      const tag = el.tagName.toLowerCase();
+      if (!['p', 'h2', 'h3', 'h4', 'blockquote'].includes(tag)) return;
+
+      const raw = el.textContent?.trim();
+      if (!raw || raw.length < 25) return;
+
+      const normalized = normalizeArticleText(raw);
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      parts.push(tag.startsWith('h') ? `###HEADING:###${normalized}` : normalized);
+    });
+
+    if (parts.join('\n\n').length > 500) break;
+  }
+
+  return parts.join('\n\n');
+}
+
+function extractJsonLdArticleBody(document: Document): string {
+  const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+  for (const script of scripts) {
+    const raw = script.textContent?.trim();
+    if (!raw) continue;
+
+    try {
+      const parsed = JSON.parse(raw);
+      const nodes = Array.isArray(parsed) ? parsed : [parsed];
+      const queue = [...nodes];
+
+      while (queue.length > 0) {
+        const node = queue.shift();
+        if (!node || typeof node !== 'object') continue;
+        const record = node as Record<string, unknown>;
+        const type = record['@type'];
+        const isArticle = Array.isArray(type)
+          ? type.some(t => String(t).toLowerCase().includes('article'))
+          : String(type ?? '').toLowerCase().includes('article');
+
+        if (isArticle && typeof record.articleBody === 'string' && record.articleBody.length > 200) {
+          return normalizeArticleText(record.articleBody);
+        }
+
+        for (const value of Object.values(record)) {
+          if (Array.isArray(value)) queue.push(...value);
+          else if (value && typeof value === 'object') queue.push(value);
+        }
+      }
+    } catch {
+      // Ignore malformed publisher JSON-LD and try the next block.
+    }
+  }
+
+  return '';
+}
+
+function extractSiteSpecificText(html: string, url: string): string {
+  const dom = new JSDOM(html, { url });
+  const { document } = dom.window;
+
+  document.querySelectorAll('script, style, noscript, iframe, nav, header, footer, aside, form').forEach(el => el.remove());
+
+  const jsonLd = extractJsonLdArticleBody(document);
+  if (jsonLd.length > 500) return jsonLd;
+
+  return textFromElements(document, [
+    'article [itemprop="articleBody"] p, article [itemprop="articleBody"] h2, article [itemprop="articleBody"] h3',
+    '[itemprop="articleBody"] p, [itemprop="articleBody"] h2, [itemprop="articleBody"] h3',
+    '.articlebodycontent p, .articlebodycontent h2, .articlebodycontent h3',
+    '.story-details p, .story-details h2, .story-details h3',
+    '.storyDetail p, .storyDetail h2, .storyDetail h3',
+    '.story_content p, .story_content h2, .story_content h3',
+    '.articleBody p, .articleBody h2, .articleBody h3',
+    '.article-body p, .article-body h2, .article-body h3',
+    '.paywall p, .paywall h2, .paywall h3',
+    'main article p, main article h2, main article h3',
+    'article p, article h2, article h3',
+    'main p, main h2, main h3',
+  ]);
+}
+
 export async function fetchArticleText(url: string): Promise<string | null> {
   try {
     const response = await fetch(url, {
       signal: AbortSignal.timeout(10000),
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; NewsBot/1.0)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-IN,en;q=0.9',
       },
     });
     if (!response.ok) {
@@ -111,6 +202,7 @@ export async function fetchArticleText(url: string): Promise<string | null> {
     }
 
     const html = await response.text();
+    const fallbackText = extractSiteSpecificText(html, url);
     let article: any;
     withCssWarningsSuppressed(() => {
       const jsdom = new JSDOM(html, { url });
@@ -119,7 +211,7 @@ export async function fetchArticleText(url: string): Promise<string | null> {
     });
 
     if (!article) {
-      return null;
+      return fallbackText.length >= 200 ? fallbackText : null;
     }
 
     const bylineText = (article.byline || '').trim();
@@ -162,10 +254,20 @@ export async function fetchArticleText(url: string): Promise<string | null> {
     // Remove byline paragraphs that got included in the article body
     text = stripLeadingBylines(text, bylineText || undefined);
 
-    if (!text || text.length < 50) return null;
+    if (fallbackText.length > text.length * 1.25) {
+      text = fallbackText;
+    }
+
+    if (!text || text.length < 50) return fallbackText.length >= 200 ? fallbackText : null;
     return text;
   } catch (err) {
-    console.error('fetchArticleText failed:', err);
+    const message = err instanceof Error ? err.message : String(err);
+    const name = err instanceof Error ? err.name : 'Error';
+    if (name === 'TimeoutError' || message.toLowerCase().includes('timeout')) {
+      console.warn(`fetchArticleText timeout for ${url}`);
+    } else {
+      console.warn(`fetchArticleText failed for ${url}: ${message}`);
+    }
     return null;
   }
 }

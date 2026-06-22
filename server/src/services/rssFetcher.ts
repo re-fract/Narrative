@@ -9,6 +9,20 @@ export interface RawArticle {
   sourceId: number;
 }
 
+export interface SourceRow {
+  id: number;
+  name: string;
+  feed_url: string;
+  base_url: string | null;
+  category: string | null;
+  is_active: boolean;
+  priority: number;
+  country_focus: string | null;
+  main_genre_hint: string | null;
+  sub_genre_hint: string | null;
+  editorial_type: string | null;
+}
+
 interface FeedItem {
   title: string;
   url: string;
@@ -154,8 +168,11 @@ async function fetchFeed(feedUrl: string): Promise<FeedItem[]> {
 }
 
 export async function fetchAllFeeds(): Promise<RawArticle[]> {
-  const result = await pool.query<{ id: number; feed_url: string }>(
-    'SELECT id, feed_url FROM sources WHERE is_active = true'
+  const result = await pool.query<SourceRow>(
+    `SELECT id, name, feed_url, base_url, category, is_active, priority,
+            country_focus, main_genre_hint, sub_genre_hint, editorial_type
+     FROM sources
+     WHERE is_active = true`
   );
 
   const sources = result.rows;
@@ -177,13 +194,21 @@ export async function fetchAllFeeds(): Promise<RawArticle[]> {
           publishedAt: item.publishedAt,
           sourceId: source.id,
         });
-        if (allItems.length >= 60) break;
       }
-      if (allItems.length >= 60) break;
     } catch (err) {
       console.error(`Feed fetch failed for ${source.feed_url}:`, err);
     }
   }
 
-  return allItems.slice(0, 60);
+  return allItems;
+}
+
+export async function getActiveSourceMetadata(): Promise<Map<number, SourceRow>> {
+  const result = await pool.query<SourceRow>(
+    `SELECT id, name, feed_url, base_url, category, is_active, priority,
+            country_focus, main_genre_hint, sub_genre_hint, editorial_type
+     FROM sources
+     WHERE is_active = true`
+  );
+  return new Map(result.rows.map(source => [source.id, source]));
 }

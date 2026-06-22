@@ -239,6 +239,11 @@ function ArticleViewPage() {
                     text={displayArticle.full_text || displayArticle.body || 'Original article content unavailable.'}
                     source={displayArticle.source_name}
                   />
+                  {!displayArticle.full_text && displayArticle.url && (
+                    <p className="text-sm leading-6 text-on-surface-variant">
+                      Full article extraction is unavailable for this publisher. Use the original source link below for the complete story.
+                    </p>
+                  )}
                 </div>
               )
             })()}

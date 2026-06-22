@@ -24,6 +24,15 @@ export interface ArticleRow {
   published_at: Date | null;
   fetched_at: Date;
   summary?: string | null;
+  normalized_title?: string | null;
+  main_genre?: string | null;
+  sub_genre?: string | null;
+  importance_score?: number | string | null;
+  is_low_signal?: boolean | null;
+  low_signal_reason?: string | null;
+  region_confidence?: number | string | null;
+  genre_confidence?: number | string | null;
+  representative_rank?: number | string | null;
 }
 
 export interface StoryRow {
@@ -38,4 +47,10 @@ export interface StoryRow {
   summary_built_at_count: number;
   first_seen_at: Date;
   last_updated_at: Date;
+  main_genre?: string | null;
+  sub_genre?: string | null;
+  importance_score?: number | string | null;
+  source_count?: number;
+  representative_article_id?: number | null;
+  event_count?: number;
 }

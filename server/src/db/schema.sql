@@ -11,7 +11,12 @@ CREATE TABLE IF NOT EXISTS sources (
     feed_url    VARCHAR(500) NOT NULL UNIQUE,
     base_url    VARCHAR(500),
     category    VARCHAR(50),
-    is_active   BOOLEAN DEFAULT true
+    is_active   BOOLEAN DEFAULT true,
+    priority    INTEGER NOT NULL DEFAULT 1,
+    country_focus VARCHAR(20),
+    main_genre_hint VARCHAR(20),
+    sub_genre_hint VARCHAR(40),
+    editorial_type VARCHAR(30)
 );
 
 -- Story clusters: persistent, evolving news events
@@ -27,7 +32,13 @@ CREATE TABLE IF NOT EXISTS stories (
     summary_built_at_count      INTEGER DEFAULT 0,
     first_seen_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_updated_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    frozen_at                   TIMESTAMP
+    frozen_at                   TIMESTAMP,
+    main_genre                  VARCHAR(20),
+    sub_genre                   VARCHAR(40),
+    importance_score            NUMERIC,
+    source_count                INTEGER NOT NULL DEFAULT 0,
+    representative_article_id   INTEGER,
+    event_count                 INTEGER NOT NULL DEFAULT 0
 );
 
 -- Individual articles ingested from feeds
@@ -38,11 +49,21 @@ CREATE TABLE IF NOT EXISTS articles (
     source_id       INTEGER REFERENCES sources(id),
     url             VARCHAR(1000) NOT NULL UNIQUE,
     title           VARCHAR(500) NOT NULL,
+    normalized_title VARCHAR(500),
     body            TEXT,
     full_text       TEXT,
     embedding       JSONB,
     published_at    TIMESTAMP,
-    fetched_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    fetched_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    summary         TEXT,
+    main_genre      VARCHAR(20),
+    sub_genre       VARCHAR(40),
+    importance_score NUMERIC,
+    is_low_signal   BOOLEAN NOT NULL DEFAULT false,
+    low_signal_reason VARCHAR(100),
+    region_confidence NUMERIC,
+    genre_confidence NUMERIC,
+    representative_rank NUMERIC
 );
 
 -- Daily assembled briefs
@@ -50,6 +71,7 @@ CREATE TABLE IF NOT EXISTS briefs (
     id              SERIAL PRIMARY KEY,
     brief_date      DATE NOT NULL,
     story_ids       INTEGER[] NOT NULL,
+    article_ids     INTEGER[],
     user_id         INTEGER,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(brief_date, user_id)
@@ -70,8 +92,11 @@ CREATE TABLE IF NOT EXISTS timeline_entries (
     id                      SERIAL PRIMARY KEY,
     story_id                INTEGER REFERENCES stories(id),
     triggered_by_article_id INTEGER REFERENCES articles(id),
+    representative_article_id INTEGER REFERENCES articles(id),
     classification          VARCHAR(20),
     text                    TEXT NOT NULL,
+    event_date              TIMESTAMP,
+    importance_score        NUMERIC,
     created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
