@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../db/index.js';
-import { fetchArticleText } from '../services/articleScraper.js';
+import { simplifyArticle } from '../services/llm/cerebrasClient.js';
 
 const router = Router();
 
@@ -9,20 +9,11 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const articleResult = await pool.query<{
-      id: number;
-      title: string;
-      url: string;
-      body: string | null;
-      full_text: string | null;
-      published_at: Date | null;
-      story_id: number | null;
-      source_name: string;
-    }>(
-      `SELECT a.id, a.title, a.url, a.body, a.full_text, a.published_at, a.story_id, s.name as source_name
-       FROM articles a
-       JOIN sources s ON a.source_id = s.id
-       WHERE a.id = $1`,
+    const articleResult = await pool.query(
+      `SELECT id, title, url, description, content, full_text, summary,
+              published_at, story_id, source_name, llm_category, importance_score
+       FROM articles
+       WHERE id = $1`,
       [id]
     );
 
@@ -30,27 +21,37 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Article not found' });
     }
 
-    const article = articleResult.rows[0];
-    const currentText = article.full_text?.trim() ?? '';
-    const rssText = article.body?.trim() ?? '';
-
-    if (currentText.length < 500 || currentText.length < rssText.length) {
-      try {
-        const scrapedText = await fetchArticleText(article.url);
-        if (scrapedText && scrapedText.length > currentText.length) {
-          article.full_text = scrapedText;
-          await pool.query('UPDATE articles SET full_text = $1 WHERE id = $2', [scrapedText, article.id]);
-        }
-      } catch (err) {
-        console.warn(`On-demand article scrape failed for ${article.url}:`, err);
-      }
-    }
-
     return res.json({
-      article,
+      article: articleResult.rows[0],
     });
   } catch {
     return res.status(500).json({ error: 'Failed to fetch article' });
+  }
+});
+
+// GET /api/articles/:id/simplify — simplify an article via Cerebras
+// Results cached in `simplifications` table (article_id, level).
+router.get('/:id/simplify', async (req, res) => {
+  try {
+    const articleId = Number(req.params.id);
+
+    const artResult = await pool.query(
+      `SELECT id, title, full_text FROM articles WHERE id = $1`,
+      [articleId]
+    );
+    if (artResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+
+    const content = (artResult.rows[0].full_text || '').trim();
+    if (!content) {
+      return res.status(422).json({ error: 'Article has no content to simplify' });
+    }
+
+    const text = await simplifyArticle(articleId, content, pool);
+    res.json({ text });
+  } catch {
+    res.status(500).json({ error: 'Failed to simplify article' });
   }
 });
 

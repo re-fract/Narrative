@@ -1,20 +1,17 @@
 import { Router } from 'express';
 import { pool } from '../db/index.js';
-import { generateNimSummary } from '../services/nimClient.js';
 
 const router = Router();
 const TIMELINE_WINDOW_DAYS = 14;
 
-// GET /api/stories/:id — fetch a story and all of its articles by story ID
+// GET /api/stories/:id — fetch a story and its articles
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const storyResult = await pool.query(
-      `SELECT id, title, summary, article_count, first_seen_at, last_updated_at,
-              main_genre, sub_genre, importance_score, source_count,
-              representative_article_id, event_count
-       FROM stories
-       WHERE id = $1`,
+      `SELECT id, title, article_count, first_seen_at, last_updated_at,
+              importance_score, source_count, main_genre, llm_category
+       FROM stories WHERE id = $1`,
       [id]
     );
 
@@ -23,11 +20,11 @@ router.get('/:id', async (req, res) => {
     }
 
     const articlesResult = await pool.query(
-      `SELECT a.id, a.title, a.url, a.body, a.full_text, a.published_at, a.story_id, s.name as source_name
-       FROM articles a
-       JOIN sources s ON a.source_id = s.id
-       WHERE a.story_id = $1
-       ORDER BY a.published_at DESC`,
+      `SELECT id, title, url, full_text, published_at, story_id, source_name,
+              llm_category, importance_score
+       FROM articles
+       WHERE story_id = $1
+       ORDER BY published_at DESC`,
       [id]
     );
 
@@ -40,125 +37,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// GET /api/stories/:id/expand — long-form synthesis (cached)
-router.get('/:id/expand', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const storyResult = await pool.query(
-      'SELECT id, title, summary, article_count, expansion_json, expansion_built_at_count FROM stories WHERE id = $1',
-      [id]
-    );
-    if (storyResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Story not found' });
-    }
-
-    const story = storyResult.rows[0];
-
-    // Return cached if valid
-    if (story.expansion_json && story.expansion_built_at_count === story.article_count) {
-      return res.json({ expansion: story.expansion_json });
-    }
-
-    const articlesResult = await pool.query(
-      'SELECT title, body, full_text FROM articles WHERE story_id = $1 ORDER BY published_at DESC',
-      [id]
-    );
-
-    const articles = articlesResult.rows;
-    const combined = articles.map((a: { title: string; body: string | null; full_text: string | null }) => `${a.title}\n${a.full_text ?? a.body ?? ''}`).join('\n\n---\n\n');
-
-    const prompt = `Synthesize the following related news articles into a comprehensive long-form summary with these sections: Background & Context, Key Players, What Happened, Differing Perspectives, What to Watch Next.\nRules: each section must be 2-3 sentences max. Keep it concise.\n\n${combined}`;
-    const result = await generateNimSummary(prompt);
-    const expansion = result ?? '';
-    const expansionJson = JSON.stringify({ text: expansion });
-
-    await pool.query(
-      `UPDATE stories SET expansion_json = $1, expansion_built_at_count = $2 WHERE id = $3`,
-      [expansionJson, story.article_count, id]
-    );
-
-    res.json({ expansion: { text: expansion } });
-  } catch {
-    res.status(500).json({ error: 'Failed to expand story' });
-  }
-});
-
-// GET /api/stories/:id/simplify
-router.get('/:id/simplify', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const level = String(req.query.level || 'simple');
-    const articleId = req.query.articleId ? Number(req.query.articleId) : null;
-
-    const prompt = `Simplify this news article for a general reader.
-
-Rules:
-- Write 2-3 concise paragraphs in essay format (NOT bullet points).
-- Cover the key facts, context, and why it matters.
-- Use plain language but don't oversimplify — this is for the full article view, not a headline overview.
-- Aim for about 120-180 words. Do NOT go below 100 words.
-- No preamble, labels, or meta-text.
-
-`;
-
-    // ── Article-specific path ──────────────────────────────────────────────
-    // When articleId is provided, simplify THAT article's own content.
-    // This ensures each timeline item (different source/date) gets a unique
-    // simplification rather than sharing the story-level summary.
-    if (articleId) {
-      const artResult = await pool.query(
-        'SELECT title, body, full_text FROM articles WHERE id = $1',
-        [articleId]
-      );
-      if (artResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Article not found' });
-      }
-      const art = artResult.rows[0];
-      const content = (art.full_text || art.body || '').trim();
-      if (!content) {
-        return res.status(422).json({ error: 'Article has no content to simplify' });
-      }
-      const result = await generateNimSummary(`${prompt}${art.title}\n\n${content}`);
-      return res.json({ text: result ?? '' });
-    }
-
-    // ── Story-level path (cached) ─────────────────────────────────────────
-    // Check cache
-    const cached = await pool.query(
-      'SELECT text FROM simplifications WHERE story_id = $1 AND level = $2',
-      [id, level]
-    );
-    if (cached.rows.length > 0) {
-      return res.json({ text: cached.rows[0].text });
-    }
-
-    const storyResult = await pool.query('SELECT title, summary FROM stories WHERE id = $1', [id]);
-    if (storyResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Story not found' });
-    }
-
-    const { title, summary } = storyResult.rows[0];
-
-    const result = await generateNimSummary(`${prompt}${title}\n\n${summary}`);
-    const text = result ?? '';
-
-    await pool.query(
-      `INSERT INTO simplifications (story_id, level, text) VALUES ($1, $2, $3)
-       ON CONFLICT (story_id, level) DO UPDATE SET text = EXCLUDED.text`,
-      [id, level, text]
-    );
-
-    res.json({ text });
-  } catch {
-    res.status(500).json({ error: 'Failed to simplify story' });
-  }
-});
-
-// GET /api/stories/:id/timeline — O(1) DB query using story_id FK
-//
-// Accepts a story ID. Returns one article per source per day (deduped via
-// DISTINCT ON), so the timeline reads as a progression rather than a wall of
-// same-day reports.
+// GET /api/stories/:id/timeline — 1-2 best articles per day, ROW_NUMBER by importance_score
 router.get('/:id/timeline', async (req, res) => {
   try {
     const { id } = req.params;
@@ -169,61 +48,18 @@ router.get('/:id/timeline', async (req, res) => {
       return res.status(404).json({ error: 'Story not found' });
     }
 
-    const eventResult = await pool.query(
-      `SELECT te.id, te.story_id, te.event_date, te.classification, te.text,
-              te.importance_score,
-              a.id as article_id, a.title as article_title, a.url,
-              a.published_at, s.name as source_name
-       FROM timeline_entries te
-       LEFT JOIN articles a ON a.id = COALESCE(te.representative_article_id, te.triggered_by_article_id)
-       LEFT JOIN sources s ON s.id = a.source_id
-       WHERE te.story_id = $1
-       ORDER BY COALESCE(te.event_date, te.created_at) DESC`,
-      [storyId]
-    );
-
-    if (eventResult.rows.length > 0) {
-      return res.json({
-        articles: eventResult.rows
-          .filter(row => row.article_id)
-          .map(row => ({
-            id: row.article_id,
-            story_id: row.story_id,
-            title: row.article_title,
-            url: row.url,
-            published_at: row.published_at ?? row.event_date,
-            source_name: row.source_name,
-          })),
-        events: eventResult.rows.map(row => ({
-          id: row.id,
-          story_id: row.story_id,
-          event_date: row.event_date,
-          classification: row.classification,
-          text: row.text,
-          importance_score: row.importance_score,
-          representative_article: row.article_id ? {
-            id: row.article_id,
-            title: row.article_title,
-            url: row.url,
-            source_name: row.source_name,
-            published_at: row.published_at,
-          } : null,
-        })),
-      });
-    }
-
-    // Deduplicate: one article per source per day (keep the latest per group).
-    // The frontend groups results by date for visual day-headers.
     const result = await pool.query(
       `SELECT * FROM (
-         SELECT DISTINCT ON (s.name, DATE(a.published_at))
-                a.id, a.story_id, a.title, a.url, a.published_at, s.name as source_name
+         SELECT a.id, a.story_id, a.title, a.url, a.published_at, a.source_name,
+                ROW_NUMBER() OVER (
+                  PARTITION BY DATE(a.published_at)
+                  ORDER BY a.importance_score DESC NULLS LAST, a.published_at DESC
+                ) AS day_rank
          FROM articles a
-         JOIN sources s ON a.source_id = s.id
          WHERE a.story_id = $1
            AND a.published_at >= NOW() - INTERVAL '${TIMELINE_WINDOW_DAYS} days'
-         ORDER BY s.name, DATE(a.published_at), a.published_at DESC
        ) sub
+       WHERE sub.day_rank <= 2
        ORDER BY sub.published_at DESC`,
       [storyId]
     );

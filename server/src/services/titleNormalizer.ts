@@ -1,42 +1,54 @@
-const BOILERPLATE_PATTERNS = [
-  /\blive updates?\b/gi,
-  /\bbreaking news\b/gi,
-  /\bopinion\b/gi,
-  /\banalysis\b/gi,
-  /\bexplained\b/gi,
-];
+/**
+ * titleNormalizer.ts — Shared title/URL normalization + dedup hash functions
+ *
+ * Used by:
+ *   - fetchers/ (each has inline copy — will be refactored to import from here)
+ *   - filters/deduplicator.ts (F8 dedup — imports from here)
+ *
+ * All 3 dedup hash functions produce SHA-256 hex strings.
+ */
 
-export function normalizeTitle(title: string): string {
-  let normalized = title.toLowerCase();
-  normalized = normalized.replace(/\s+[-|]\s+[^-|]+$/g, ' ');
-  for (const pattern of BOILERPLATE_PATTERNS) {
-    normalized = normalized.replace(pattern, ' ');
+import { createHash } from 'crypto';
+
+// ── URL Normalization ──
+
+export function normalizeUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const domain = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    const path = parsed.pathname.replace(/\/+$/, '');  // strip trailing slashes
+    return `https://${domain}${path}`;                  // no query, no fragment
+  } catch {
+    return url.toLowerCase();
   }
-  normalized = normalized
-    .replace(/&amp;/g, ' and ')
-    .replace(/['"]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return normalized.slice(0, 500);
 }
 
-export function titleQualityScore(title: string): number {
-  const normalized = normalizeTitle(title);
-  const words = normalized.split(' ').filter(Boolean);
-  if (words.length === 0) return 0;
+// ── Title Normalization ──
 
-  let score = 1;
-  if (words.length >= 5 && words.length <= 16) score += 0.45;
-  if (/[0-9]/.test(title)) score += 0.15;
-  if (/\b(says|approves|wins|launches|warns|cuts|raises|signs|reports|arrests|strikes)\b/i.test(title)) {
-    score += 0.25;
-  }
-  if (/\b(this|that|these|those|watch|viral|shocking|you need to know)\b/i.test(title)) {
-    score -= 0.45;
-  }
-  if (/\blive\b/i.test(title)) score -= 0.25;
-  if (words.length > 22) score -= 0.25;
+export function normalizeTitleForHash(title: string): string {
+  return title
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[^a-z0-9\s]/g, '');
+}
 
-  return Math.max(0, Math.min(2, score));
+// ── Dedup Hash Functions ──
+
+function sha256(input: string): string {
+  return createHash('sha256').update(input).digest('hex');
+}
+
+export function computeTitleHash(title: string): string {
+  return sha256(normalizeTitleForHash(title));
+}
+
+export function computeNormalizedUrlHash(url: string): string {
+  return sha256(normalizeUrl(url));
+}
+
+export function computeDomainTitleHash(domain: string, title: string): string {
+  const normalizedTitle = normalizeTitleForHash(title);
+  const prefix = normalizedTitle.substring(0, 50);
+  return sha256(`${domain.toLowerCase()}:${prefix}`);
 }

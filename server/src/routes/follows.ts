@@ -8,7 +8,7 @@ router.get('/', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT f.id, f.story_id, f.followed_at, f.last_seen_at,
-              s.title, s.summary, s.article_count, s.last_updated_at
+              s.title, s.article_count, s.last_updated_at
        FROM follows f
        JOIN stories s ON f.story_id = s.id
        ORDER BY s.last_updated_at DESC`

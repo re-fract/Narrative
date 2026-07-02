@@ -1,3 +1,9 @@
+/**
+ * @deprecated This module is no longer imported anywhere.
+ * Replaced by cerebrasClient.ts (zai-glm-4.7) for summarization + simplification.
+ * Kept for reference only — safe to delete.
+ */
+
 interface NIMResponse {
   choices: Array<{
     message: {

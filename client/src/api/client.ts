@@ -31,7 +31,8 @@ export interface ArticleItem {
   story_id: number | null
   title: string
   url: string
-  body: string
+  description: string | null
+  content: string | null
   full_text: string | null
   published_at: string
   source_name: string
@@ -54,10 +55,6 @@ export interface TimelineResponse {
   articles: TimelineArticle[]
 }
 
-export interface ExpansionResponse {
-  expansion: { text: string }
-}
-
 export interface SimplifyResponse {
   text: string
 }
@@ -68,7 +65,6 @@ export interface FollowItem {
   followed_at: string
   last_seen_at: string
   title: string | null
-  summary: string | null
   article_count: number
   last_updated_at: string
 }
@@ -95,15 +91,8 @@ export function getStoryTimeline(id: string | number): Promise<TimelineResponse>
   return apiRequest<TimelineResponse>(`/stories/${id}/timeline`)
 }
 
-export function getStoryExpand(id: string | number): Promise<ExpansionResponse> {
-  return apiRequest<ExpansionResponse>(`/stories/${id}/expand`)
-}
-
-export function getStorySimplify(id: string | number, level: string, articleId?: number): Promise<SimplifyResponse> {
-  const params = articleId
-    ? `level=${encodeURIComponent(level)}&articleId=${articleId}`
-    : `level=${encodeURIComponent(level)}`
-  return apiRequest<SimplifyResponse>(`/stories/${id}/simplify?${params}`)
+export function getArticleSimplify(articleId: string | number): Promise<SimplifyResponse> {
+  return apiRequest<SimplifyResponse>(`/articles/${articleId}/simplify`)
 }
 
 export function getFollows(): Promise<FollowsResponse> {

@@ -1,5 +1,5 @@
 import { GoogleGenAI, Part } from '@google/genai';
-import { pool } from '../db/index.js';
+import { pool } from '../../db/index.js';
 
 export async function summarizeSingle(articleText: string, genAI: GoogleGenAI): Promise<string> {
   const result = await genAI.models.generateContent({

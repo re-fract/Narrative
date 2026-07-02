@@ -1,5 +1,136 @@
+import { Agent, fetch as undiFetch } from 'undici';
 import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
+import { pool } from '../db/index.js';
+import {
+  SCRAPE_CONCURRENCY,
+  SCRAPE_DOMAIN_COOLDOWN_HOURS,
+  SCRAPE_FAILURE_THRESHOLD,
+  SCRAPE_THIN_CONTENT_CHARS,
+  TITLE_SIMILARITY_LOOKUP,
+} from '../config/constants.js';
+
+// ── Custom undici Agent for scraping ──
+// Default undici maxHeaderSize is ~16KB; CDN-heavy sites (Cloudflare etc.)
+// send massive Set-Cookie/security headers that overflow that limit.
+// Bumping to 64KB resolves HeadersOverflowError on those sites.
+const scrapeAgent = new Agent({ maxHeaderSize: 65536 });
+
+// ── Module-level quota exhaustion flag ──
+// Set on HTTP 402 or missing env key; reset at start of each enrichArticles() call
+let quotaExhausted = false;
+
+// ── WorldNewsAPI circuit breaker ──
+// If N consecutive lookup calls fail, stop trying for the rest of the pipeline run.
+const WN_CIRCUIT_BREAKER_THRESHOLD = 3;
+let wnConsecutiveFailures = 0;
+let wnCircuitOpen = false;
+
+export function resetEnrichmentQuota(): void {
+  quotaExhausted = false;
+  wnConsecutiveFailures = 0;
+  wnCircuitOpen = false;
+}
+
+// ── Trigram similarity (Jaccard on character trigrams) ──
+// Reuses the same pattern as filters/deduplicator.ts
+
+function trigrams(s: string): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < s.length - 2; i++) result.push(s.slice(i, i + 3));
+  return result;
+}
+
+function trigramSim(a: string, b: string): number {
+  const triA = new Set(trigrams(a.toLowerCase()));
+  const triB = new Set(trigrams(b.toLowerCase()));
+  let intersection = 0;
+  for (const t of triA) {
+    if (triB.has(t)) intersection++;
+  }
+  return intersection / (triA.size + triB.size - intersection);
+}
+
+// ── WorldNewsAPI text lookup ──
+
+async function lookupFullText(
+  title: string,
+  sourceApi: string,
+): Promise<{ text: string | null; source: string }> {
+  // Skip if article already came from WorldNewsAPI (has its own text)
+  if (sourceApi === 'worldnews') {
+    return { text: null, source: 'already_has_text' };
+  }
+
+  const apiKey = process.env.WORLDNEWS_API_KEY;
+  if (!apiKey) {
+    quotaExhausted = true;
+    return { text: null, source: 'quota_exhausted' };
+  }
+
+  // Circuit breaker: skip if too many consecutive failures this run
+  if (wnCircuitOpen) {
+    return { text: null, source: 'circuit_open' };
+  }
+
+  try {
+    const params = new URLSearchParams({
+      'api-key': apiKey,
+      text: title.substring(0, 100),
+      language: 'en',
+      number: '3',
+      sort: 'publish-time',
+      sort_direction: 'DESC',
+    });
+
+    const resp = await undiFetch(
+      `https://api.worldnewsapi.com/search-news?${params}`,
+      {
+        signal: AbortSignal.timeout(15_000),
+        dispatcher: scrapeAgent,
+      },
+    );
+
+    if (resp.status === 402) {
+      quotaExhausted = true;
+      console.warn('[LOOKUP] WorldNewsAPI quota exhausted (402)');
+      return { text: null, source: 'quota_exhausted' };
+    }
+
+    const data = (await resp.json()) as {
+      news?: Array<{ title?: string; text?: string }>;
+    };
+
+    if (data.news && data.news.length > 0) {
+      // Find best match by title trigram similarity
+      const best = data.news.find(
+        (n) =>
+          n.title &&
+          trigramSim(n.title, title) > TITLE_SIMILARITY_LOOKUP &&
+          n.text &&
+          n.text.length >= SCRAPE_THIN_CONTENT_CHARS,
+      );
+      if (best?.text) {
+        wnConsecutiveFailures = 0; // success resets the breaker
+        return { text: best.text, source: 'lookup' };
+      }
+    }
+  } catch (err: unknown) {
+    wnConsecutiveFailures++;
+    if (wnConsecutiveFailures >= WN_CIRCUIT_BREAKER_THRESHOLD) {
+      wnCircuitOpen = true;
+      console.warn(`[LOOKUP] WorldNewsAPI circuit breaker opened after ${wnConsecutiveFailures} consecutive failures`);
+    } else {
+      const code = (err as { cause?: { code?: string } })?.cause?.code ?? '';
+      const label = code === 'UND_ERR_CONNECT_TIMEOUT' ? 'timeout' : 'error';
+      console.warn(`[LOOKUP] WorldNewsAPI ${label} (${wnConsecutiveFailures}/${WN_CIRCUIT_BREAKER_THRESHOLD}):`, (err as Error).message ?? err);
+    }
+  }
+
+  return { text: null, source: 'not_found' };
+}
+
+// ── Text normalization helpers (unchanged) ──
 
 function normalizeArticleText(text: string): string {
   if (!text) return text;
@@ -98,103 +229,28 @@ function withCssWarningsSuppressed<T>(fn: () => T): T {
   }
 }
 
-function textFromElements(document: Document, selectors: string[]): string {
-  const parts: string[] = [];
-  const seen = new Set<string>();
+// ── Public scraping API (unchanged) ──
 
-  for (const selector of selectors) {
-    const elements = document.querySelectorAll(selector);
-    elements.forEach((el) => {
-      const tag = el.tagName.toLowerCase();
-      if (!['p', 'h2', 'h3', 'h4', 'blockquote'].includes(tag)) return;
-
-      const raw = el.textContent?.trim();
-      if (!raw || raw.length < 25) return;
-
-      const normalized = normalizeArticleText(raw);
-      const key = normalized.toLowerCase();
-      if (seen.has(key)) return;
-      seen.add(key);
-
-      parts.push(tag.startsWith('h') ? `###HEADING:###${normalized}` : normalized);
-    });
-
-    if (parts.join('\n\n').length > 500) break;
+export async function scrapeArticleWithStatus(url: string): Promise<{ text: string | null; status: 'failed' | 'thin' | 'full' }> {
+  const text = await fetchArticleText(url);
+  if (!text || text.length < 50) {
+    return { text, status: 'failed' };
   }
-
-  return parts.join('\n\n');
-}
-
-function extractJsonLdArticleBody(document: Document): string {
-  const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-  for (const script of scripts) {
-    const raw = script.textContent?.trim();
-    if (!raw) continue;
-
-    try {
-      const parsed = JSON.parse(raw);
-      const nodes = Array.isArray(parsed) ? parsed : [parsed];
-      const queue = [...nodes];
-
-      while (queue.length > 0) {
-        const node = queue.shift();
-        if (!node || typeof node !== 'object') continue;
-        const record = node as Record<string, unknown>;
-        const type = record['@type'];
-        const isArticle = Array.isArray(type)
-          ? type.some(t => String(t).toLowerCase().includes('article'))
-          : String(type ?? '').toLowerCase().includes('article');
-
-        if (isArticle && typeof record.articleBody === 'string' && record.articleBody.length > 200) {
-          return normalizeArticleText(record.articleBody);
-        }
-
-        for (const value of Object.values(record)) {
-          if (Array.isArray(value)) queue.push(...value);
-          else if (value && typeof value === 'object') queue.push(value);
-        }
-      }
-    } catch {
-      // Ignore malformed publisher JSON-LD and try the next block.
-    }
+  if (text.length < 300) {
+    return { text, status: 'thin' };
   }
-
-  return '';
-}
-
-function extractSiteSpecificText(html: string, url: string): string {
-  const dom = new JSDOM(html, { url });
-  const { document } = dom.window;
-
-  document.querySelectorAll('script, style, noscript, iframe, nav, header, footer, aside, form').forEach(el => el.remove());
-
-  const jsonLd = extractJsonLdArticleBody(document);
-  if (jsonLd.length > 500) return jsonLd;
-
-  return textFromElements(document, [
-    'article [itemprop="articleBody"] p, article [itemprop="articleBody"] h2, article [itemprop="articleBody"] h3',
-    '[itemprop="articleBody"] p, [itemprop="articleBody"] h2, [itemprop="articleBody"] h3',
-    '.articlebodycontent p, .articlebodycontent h2, .articlebodycontent h3',
-    '.story-details p, .story-details h2, .story-details h3',
-    '.storyDetail p, .storyDetail h2, .storyDetail h3',
-    '.story_content p, .story_content h2, .story_content h3',
-    '.articleBody p, .articleBody h2, .articleBody h3',
-    '.article-body p, .article-body h2, .article-body h3',
-    '.paywall p, .paywall h2, .paywall h3',
-    'main article p, main article h2, main article h3',
-    'article p, article h2, article h3',
-    'main p, main h2, main h3',
-  ]);
+  return { text, status: 'full' };
 }
 
 export async function fetchArticleText(url: string): Promise<string | null> {
   try {
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
+    const response = await undiFetch(url, {
+      signal: AbortSignal.timeout(15000),
+      dispatcher: scrapeAgent,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-IN,en;q=0.9',
+        'Accept-Language': 'en-US,en;q=0.5',
       },
     });
     if (!response.ok) {
@@ -202,7 +258,6 @@ export async function fetchArticleText(url: string): Promise<string | null> {
     }
 
     const html = await response.text();
-    const fallbackText = extractSiteSpecificText(html, url);
     let article: any;
     withCssWarningsSuppressed(() => {
       const jsdom = new JSDOM(html, { url });
@@ -211,7 +266,7 @@ export async function fetchArticleText(url: string): Promise<string | null> {
     });
 
     if (!article) {
-      return fallbackText.length >= 200 ? fallbackText : null;
+      return null;
     }
 
     const bylineText = (article.byline || '').trim();
@@ -254,20 +309,147 @@ export async function fetchArticleText(url: string): Promise<string | null> {
     // Remove byline paragraphs that got included in the article body
     text = stripLeadingBylines(text, bylineText || undefined);
 
-    if (fallbackText.length > text.length * 1.25) {
-      text = fallbackText;
-    }
-
-    if (!text || text.length < 50) return fallbackText.length >= 200 ? fallbackText : null;
+    if (!text || text.length < 50) return null;
     return text;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const name = err instanceof Error ? err.name : 'Error';
-    if (name === 'TimeoutError' || message.toLowerCase().includes('timeout')) {
-      console.warn(`fetchArticleText timeout for ${url}`);
+  } catch (err: unknown) {
+    const code = (err as { cause?: { code?: string } })?.cause?.code ?? '';
+    // Known-recoverable network errors: downgraded to warn, not error
+    if (code === 'UND_ERR_HEADERS_OVERFLOW' || code === 'UND_ERR_CONNECT_TIMEOUT') {
+      console.warn(`fetchArticleText ${code}: ${url}`);
     } else {
-      console.warn(`fetchArticleText failed for ${url}: ${message}`);
+      console.error('fetchArticleText failed:', err);
     }
     return null;
   }
+}
+
+// ── Main enrichment entry point ──
+
+export async function enrichArticles(articleIds: number[]): Promise<void> {
+  // Reset quota flag at start of each pipeline run
+  quotaExhausted = false;
+
+  if (articleIds.length === 0) return;
+
+  // Query articles for enrichment
+  const articlesRes = await pool.query<{
+    id: number;
+    url: string;
+    title: string;
+    source_api: string;
+    content: string | null;
+    full_text: string | null;
+    scrape_status: string | null;
+    source_domain: string | null;
+  }>(
+    `SELECT id, url, title, source_api, content, full_text, scrape_status, source_domain
+     FROM articles
+     WHERE id = ANY($1)`,
+    [articleIds],
+  );
+
+  if (articlesRes.rows.length === 0) return;
+
+  // Query domain cooldown: skip domains with ≥ SCRAPE_FAILURE_THRESHOLD consecutive failures
+  // in the last SCRAPE_DOMAIN_COOLDOWN_HOURS hours
+  const cooldownResult = await pool.query<{ source_domain: string }>(
+    `SELECT source_domain
+     FROM articles
+     WHERE scrape_status = 'failed'
+       AND fetched_at >= NOW() - INTERVAL '1 hour' * $1
+     GROUP BY source_domain
+     HAVING COUNT(*) >= $2`,
+    [SCRAPE_DOMAIN_COOLDOWN_HOURS, SCRAPE_FAILURE_THRESHOLD],
+  );
+  const cooldownDomains = new Set(
+    cooldownResult.rows.map((r) => r.source_domain).filter(Boolean),
+  );
+
+  const articles = articlesRes.rows.filter(
+    (a) => !a.source_domain || !cooldownDomains.has(a.source_domain),
+  );
+
+  // Track stats
+  let fullCount = 0;
+  let thinCount = 0;
+  let lookupCount = 0;
+  let failedCount = 0;
+
+  // Process in chunks of SCRAPE_CONCURRENCY
+  for (let i = 0; i < articles.length; i += SCRAPE_CONCURRENCY) {
+    const chunk = articles.slice(i, i + SCRAPE_CONCURRENCY);
+
+    await Promise.all(
+      chunk.map(async (article) => {
+        let fullText: string | null = article.full_text;
+        let scrapeStatus: string = article.scrape_status ?? 'pending';
+
+        // 1. WorldNewsAPI articles that already have content → set directly
+        if (
+          article.source_api === 'worldnews' &&
+          article.content &&
+          article.content.length >= SCRAPE_THIN_CONTENT_CHARS
+        ) {
+          fullText = article.content;
+          scrapeStatus = 'lookup';
+          lookupCount++;
+        } else {
+          // 2. Attempt JSDOM+Readability scrape
+          try {
+            const { text, status } = await scrapeArticleWithStatus(article.url);
+
+            if (status === 'full') {
+              fullText = text;
+              scrapeStatus = 'full';
+              fullCount++;
+            } else if (status === 'thin') {
+              fullText = text;
+              scrapeStatus = 'thin';
+              thinCount++;
+            } else {
+              // status === 'failed'
+              scrapeStatus = 'failed';
+              failedCount++;
+            }
+          } catch (err) {
+            console.error(`[ENRICH] Scrape failed for article ${article.id}:`, err);
+            scrapeStatus = 'failed';
+            failedCount++;
+          }
+
+          // 3. If scrape failed/thin and quota not exhausted and circuit not open → try WorldNewsAPI lookup
+          if (
+            (scrapeStatus === 'failed' || scrapeStatus === 'thin') &&
+            !quotaExhausted &&
+            !wnCircuitOpen
+          ) {
+            const lookup = await lookupFullText(article.title, article.source_api);
+            if (
+              lookup.text &&
+              lookup.text.length >= SCRAPE_THIN_CONTENT_CHARS
+            ) {
+              fullText = lookup.text;
+              scrapeStatus = 'lookup';
+              // Repurpose thin/failed counts — this article is now lookup
+              if (scrapeStatus === 'thin') thinCount--;
+              else if (scrapeStatus === 'failed') failedCount--;
+              lookupCount++;
+            }
+          }
+        }
+
+        // 4. Update the article row
+        await pool.query(
+          'UPDATE articles SET full_text = $1, scrape_status = $2 WHERE id = $3',
+          [fullText, scrapeStatus, article.id],
+        );
+      }),
+    );
+  }
+
+  console.log(
+    `[ENRICH] Enriched ${articles.length} articles: ${fullCount} full, ${thinCount} thin, ${lookupCount} lookup, ${failedCount} failed` +
+    (wnCircuitOpen ? ' [WN circuit OPEN]' : '') +
+    (quotaExhausted ? ' [WN quota exhausted]' : ''),
+  );
 }

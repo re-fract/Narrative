@@ -6,10 +6,10 @@ declare global {
 
 const pool = globalThis.dbPool || new Pool({
   connectionString: process.env.DATABASE_URL!,
-  ssl: true,
+  ssl: { rejectUnauthorized: false },
   max: 10,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  connectionTimeoutMillis: 10000,
 });
 
 if (process.env.NODE_ENV !== 'production') {

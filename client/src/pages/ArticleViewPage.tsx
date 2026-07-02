@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { getArticle, getStorySimplify, getStoryTimeline } from '../api/client'
+import { getArticle, getArticleSimplify, getStoryTimeline } from '../api/client'
 import type { ArticleItem, TimelineArticle } from '../api/client'
 import SimplifyToggle, { type SimplifyMode } from '../components/SimplifyToggle'
 import ParsedArticleBody from '../components/ParsedArticleBody'
@@ -109,9 +109,8 @@ function ArticleViewPage() {
     setSimplifyLoading(true)
     setSimplifyError(null)
     try {
-      const storyId = resolvedStoryId ?? article?.story_id ?? article?.id ?? Number(id)
       const articleIdForSimplify = article?.id
-      const res = await getStorySimplify(storyId, 'simple', articleIdForSimplify)
+      const res = await getArticleSimplify(articleIdForSimplify)
       setSimplifyCache((prev) => ({ ...prev, simple: res.text }))
     } catch {
       setSimplifyError('Failed to load simplified version')
@@ -236,14 +235,9 @@ function ArticleViewPage() {
               return (
                 <div className="font-body text-body-lg text-on-surface flex flex-col gap-6 leading-relaxed">
                   <ParsedArticleBody
-                    text={displayArticle.full_text || displayArticle.body || 'Original article content unavailable.'}
+                    text={displayArticle.full_text || displayArticle.content || displayArticle.description || 'Original article content unavailable.'}
                     source={displayArticle.source_name}
                   />
-                  {!displayArticle.full_text && displayArticle.url && (
-                    <p className="text-sm leading-6 text-on-surface-variant">
-                      Full article extraction is unavailable for this publisher. Use the original source link below for the complete story.
-                    </p>
-                  )}
                 </div>
               )
             })()}

@@ -6,6 +6,8 @@ import briefsRouter from './routes/briefs.js';
 import articlesRouter from './routes/articles.js';
 import storiesRouter from './routes/stories.js';
 import followsRouter from './routes/follows.js';
+import adminRouter from './routes/admin.js';
+import { startScheduler } from './scheduler.js';
 
 const app = express();
 
@@ -16,6 +18,7 @@ app.use('/api/briefs', briefsRouter);
 app.use('/api/articles', articlesRouter);
 app.use('/api/stories', storiesRouter);
 app.use('/api/follows', followsRouter);
+app.use('/api/admin', adminRouter);
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -23,6 +26,7 @@ migrate()
   .then(() => {
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
+      startScheduler();
     });
   })
   .catch((err) => {
