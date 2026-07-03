@@ -7,6 +7,7 @@ import articlesRouter from './routes/articles.js';
 import storiesRouter from './routes/stories.js';
 import followsRouter from './routes/follows.js';
 import adminRouter from './routes/admin.js';
+import chatRouter from './routes/chat.js';
 import { startScheduler } from './scheduler.js';
 
 const app = express();
@@ -19,6 +20,7 @@ app.use('/api/articles', articlesRouter);
 app.use('/api/stories', storiesRouter);
 app.use('/api/follows', followsRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/chat', chatRouter);
 
 const PORT = Number(process.env.PORT ?? 3000);
 

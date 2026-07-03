@@ -59,6 +59,10 @@ export interface SimplifyResponse {
   text: string
 }
 
+export interface ChatResponse {
+  answer: string
+}
+
 export interface FollowItem {
   id: number
   story_id: number
@@ -106,4 +110,17 @@ export function postFollow(id: string | number): Promise<FollowActionResponse> {
 
 export function deleteFollow(id: string | number): Promise<FollowActionResponse> {
   return apiRequest<FollowActionResponse>(`/stories/${id}/follow`, { method: 'DELETE' })
+}
+
+export function postChatMessage(
+  articleId: number,
+  storyId: number | null,
+  question: string,
+  history: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+): Promise<ChatResponse> {
+  return apiRequest<ChatResponse>('/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ articleId, storyId, question, history }),
+  })
 }

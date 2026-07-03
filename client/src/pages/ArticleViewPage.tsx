@@ -260,7 +260,11 @@ function ArticleViewPage() {
       </main>
 
       {/* AI Chat Sidebar */}
-      <ArticleSidebar />
+      <ArticleSidebar
+        articleId={article?.id ?? null}
+        storyId={resolvedStoryId}
+        articleTitle={article?.title ?? ''}
+      />
     </div>
   )
 }
