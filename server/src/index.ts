@@ -8,11 +8,10 @@ import storiesRouter from './routes/stories.js';
 import followsRouter from './routes/follows.js';
 import adminRouter from './routes/admin.js';
 import chatRouter from './routes/chat.js';
-import { startScheduler } from './scheduler.js';
 
 const app = express();
 
-app.use(cors({ origin: 'http://localhost:5173' }));
+app.use(cors({ origin: process.env.FRONTEND_URL ?? 'http://localhost:5173' }));
 app.use(express.json());
 
 app.use('/api/briefs', briefsRouter);
@@ -28,7 +27,6 @@ migrate()
   .then(() => {
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
-      startScheduler();
     });
   })
   .catch((err) => {
