@@ -100,6 +100,10 @@ function ArticleViewPage() {
       return
     }
 
+    if (!article) {
+      return
+    }
+
     if (simplifyCache['simple'] || !id) {
       setSimplifyError(null)
       return
@@ -108,8 +112,7 @@ function ArticleViewPage() {
     setSimplifyLoading(true)
     setSimplifyError(null)
     try {
-      const articleIdForSimplify = article?.id
-      const res = await getArticleSimplify(articleIdForSimplify)
+      const res = await getArticleSimplify(article.id)
       setSimplifyCache((prev) => ({ ...prev, simple: res.text }))
     } catch {
       setSimplifyError('Failed to load simplified version')
