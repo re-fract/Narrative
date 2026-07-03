@@ -34,8 +34,8 @@ export const TITLE_SIMILARITY_LOOKUP = 0.75;        // WorldNewsAPI lookup title
 export const DEDUP_CHECK_DAYS = 7;                  // Cross-day dedup lookback window
 
 // ── Story Clustering ──
-export const SIMILARITY_THRESHOLD_EXISTING = 0.72;
-export const SIMILARITY_THRESHOLD_NEW = 0.73;
+export const SIMILARITY_THRESHOLD_EXISTING = 0.75;
+export const SIMILARITY_THRESHOLD_NEW = 0.80;
 
 // ── Brief Selection ──
 export const BRIEF_SIZE = 14;

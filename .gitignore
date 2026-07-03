@@ -1,7 +1,23 @@
+# --- App-specific ---
+# Design mockups
+stitch_design_stuff/
+
+# Claude project files
+.claude/
+.agents/
+.codex/
+
+# Architecture docs (not needed to run)
+ARCHITECTURE.md
+CLAUDE.md
+AGENTS.md
+STATE.md
+
 # --- Node.js / JavaScript ---
 # Dependencies
 node_modules/
 client/node_modules/
+server/node_modules/
 
 # Build output
 client/dist/
@@ -36,3 +52,15 @@ coverage/
 # --- TypeScript ---
 # TS build info files
 *.tsbuildinfo
+
+# --- One-time scripts ---
+# Backfill + fake data scripts (already run)
+server/add_fake_croatia.ts
+server/backfill.mjs
+server/backfill_recluster.mjs
+# Applied migrations (schema.sql is the source of truth)
+server/src/db/migrations/
+server/src/scripts/
+docs/
+plans_old/
+server/test.js

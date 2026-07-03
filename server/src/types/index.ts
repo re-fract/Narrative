@@ -191,3 +191,28 @@ export interface ScoredStory {
   source_count: number;
   representative_article_id: number | null;
 }
+
+/**
+ * An article that is a candidate for the daily brief.
+ * The brief is article-centric: we select today's best articles directly,
+ * using story_importance as a quality signal rather than as the selection key.
+ */
+export interface BriefCandidate {
+  // Article identity
+  id: number;
+  title: string;
+  published_at: Date;
+  source_name: string | null;
+  source_domain: string;
+  llm_category: string | null;
+  llm_tier: string | null;
+  main_genre: string | null;
+  api_source_priority: number | null;
+  description: string | null;
+  full_text: string | null;
+  scrape_status: string | null;
+  // Story context (null = singleton, not part of any story yet)
+  story_id: number | null;
+  story_importance: number | null;   // stories.importance_score boost signal
+  story_article_count: number | null;
+}

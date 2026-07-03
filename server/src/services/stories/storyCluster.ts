@@ -29,6 +29,14 @@ export function storyMatchScore(
 ): number {
   const embSim = maxArticleSimilarity(article.embedding, story.recentEmbeddings);
 
+  // When keywords are absent on either side, use pure embedding similarity.
+  // Without this guard, the 35% keyword component evaluates to 0, making the
+  // effective embedding threshold 0.72 / 0.65 ≈ 1.108 — mathematically
+  // impossible, so no articles would ever match existing stories.
+  if (article.keywords.length === 0 || story.keywordSet.length === 0) {
+    return embSim;
+  }
+
   const topKeywords = article.keywords.slice(0, 8);
   const overlap = topKeywords.filter(kw => story.keywordSet.includes(kw)).length;
   const keywordScore = Math.min(overlap / 4, 1.0);

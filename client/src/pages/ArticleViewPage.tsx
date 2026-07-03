@@ -21,18 +21,17 @@ function ArticleViewPage() {
   const [timelineLoading, setTimelineLoading] = useState(false)
   const [resolvedStoryId, setResolvedStoryId] = useState<number | null>(null)
 
-  const fetchTimeline = async (storyId: number, fetchId: number) => {
+  const fetchTimeline = async (storyId: number, fetchId: number, articleId: number) => {
     setTimelineLoading(true)
     try {
       // Artificial delay to prevent UI flickering and make the transition feel smoother
       await new Promise(resolve => setTimeout(resolve, 400))
-      
-      const res = await getStoryTimeline(storyId)
+
+      // Pass the current article ID so the server always pins it in the timeline,
+      // regardless of importance_score ranking or near-duplicate dedup.
+      const res = await getStoryTimeline(storyId, articleId)
       if (fetchId !== activeFetchIdRef.current) return
-      // Sort newest first — backend returns oldest→newest
-      const sorted = res.articles
-        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
-      setTimelineArticles(sorted)
+      setTimelineArticles(res.articles)
     } catch {
       // silently fail — timeline is non-critical
     } finally {
@@ -63,7 +62,7 @@ function ArticleViewPage() {
       setResolvedStoryId(res.article.story_id)
 
       if (res.article.story_id) {
-        fetchTimeline(res.article.story_id, fetchId)
+        fetchTimeline(res.article.story_id, fetchId, Number(id))
       } else {
         setTimelineArticles([])
         setTimelineLoading(false)

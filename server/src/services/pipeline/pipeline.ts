@@ -23,10 +23,10 @@ import { cosineSimilarity, averageVectors } from '../vectorUtils.js';
 import { dedupTodaysArticles } from '../stories/storyDedup.js';
 import { updateStoryKeywords } from '../stories/storyKeywords.js';
 import { scoreAllActiveStories } from '../stories/storyScoring.js';
-import { selectBriefStories } from '../stories/briefSelection.js';
+import { selectBriefArticles } from '../stories/briefSelection.js';
 import { aggregateDailyMetrics } from './metrics.js';
 import { CLASSIFICATION_BATCH_SIZE } from '../../config/constants.js';
-import type { NormalizedArticle, ScoredArticle, FilterRejection, ScoredStory } from '../../types/index.js';
+import type { NormalizedArticle, ScoredArticle, FilterRejection, BriefCandidate } from '../../types/index.js';
 
 // ── Exported result type ──
 
@@ -470,29 +470,47 @@ async function clusterUnmatchedArticles(
     articleEmbeddings.set(row.id, emb);
   }
 
-  // Greedy sequential clustering
-  const clusters: { centroid: number[]; articleIds: number[] }[] = [];
+  // Greedy sequential clustering using max-similarity against individual article
+  // embeddings (not cluster centroids). Two guards prevent topic drift:
+  //
+  //   1. Chain-link: the article must be >= SIMILARITY_THRESHOLD_NEW similar to
+  //      at least one of the 10 most recent articles in the cluster.
+  //   2. Anchor: the article must also be >= ANCHOR_THRESHOLD similar to the
+  //      cluster's seed (first) article. This stops the cluster from drifting so
+  //      far from its original topic that an unrelated article can join via a
+  //      sequence of small hops.
+  const ANCHOR_THRESHOLD = 0.70;
+  const clusters: { centroid: number[]; seedId: number; articleIds: number[] }[] = [];
 
   for (const [articleId, embedding] of articleEmbeddings) {
     let bestClusterIdx: number | null = null;
     let bestSim = -Infinity;
 
     for (let ci = 0; ci < clusters.length; ci++) {
-      const sim = cosineSimilarity(embedding, clusters[ci].centroid);
-      if (sim >= SIMILARITY_THRESHOLD_NEW && sim > bestSim) {
-        bestSim = sim;
-        bestClusterIdx = ci;
+      // Anchor check first (cheap rejection)
+      const seedEmb = articleEmbeddings.get(clusters[ci].seedId)!;
+      if (cosineSimilarity(embedding, seedEmb) < ANCHOR_THRESHOLD) continue;
+
+      // Chain-link check: max similarity against the 10 most recent articles
+      const recentIds = clusters[ci].articleIds.slice(-10);
+      for (const existingId of recentIds) {
+        const existingEmb = articleEmbeddings.get(existingId)!;
+        const sim = cosineSimilarity(embedding, existingEmb);
+        if (sim >= SIMILARITY_THRESHOLD_NEW && sim > bestSim) {
+          bestSim = sim;
+          bestClusterIdx = ci;
+        }
       }
     }
 
     if (bestClusterIdx !== null) {
-      // Merge into existing cluster
+      // Merge into existing cluster; update centroid for story storage only
       const cluster = clusters[bestClusterIdx];
       cluster.articleIds.push(articleId);
       cluster.centroid = averageVectors(cluster.articleIds.map(id => articleEmbeddings.get(id)!));
     } else {
-      // Create new cluster
-      clusters.push({ centroid: [...embedding], articleIds: [articleId] });
+      // Create new cluster seeded by this article
+      clusters.push({ centroid: [...embedding], seedId: articleId, articleIds: [articleId] });
     }
   }
 
@@ -558,13 +576,10 @@ async function updateStoryMetadata(storyIds: number[]): Promise<void> {
 
 // ── Summarize brief articles ──
 
-async function summarizeBriefArticles(selected: ScoredStory[]): Promise<number> {
+async function summarizeBriefArticles(articleIds: number[]): Promise<number> {
   let summarized = 0;
 
-  for (const story of selected) {
-    const repId = story.representative_article_id;
-    if (!repId) continue;
-
+  for (const artId of articleIds) {
     const artRes = await pool.query<{
       title: string;
       full_text: string | null;
@@ -572,7 +587,7 @@ async function summarizeBriefArticles(selected: ScoredStory[]): Promise<number> 
       description: string | null;
     }>(
       'SELECT title, full_text, content, description FROM articles WHERE id = $1',
-      [repId],
+      [artId],
     );
     const art = artRes.rows[0];
     if (!art) continue;
@@ -587,11 +602,11 @@ async function summarizeBriefArticles(selected: ScoredStory[]): Promise<number> 
     try {
       const summary = await generateArticleSummary(art.title, text);
       if (summary) {
-        await pool.query('UPDATE articles SET summary = $1 WHERE id = $2', [summary, repId]);
+        await pool.query('UPDATE articles SET summary = $1 WHERE id = $2', [summary, artId]);
         summarized++;
       }
     } catch (err) {
-      console.error(`[PIPELINE] Summary failed for article ${repId}:`, err);
+      console.error(`[PIPELINE] Summary failed for article ${artId}:`, err);
     }
   }
 
@@ -773,34 +788,55 @@ export async function runPipeline(opts?: PipelineOptions): Promise<PipelineResul
     // PHASE 5: BRIEF ASSEMBLY
     // ════════════════════════════════════════════════
 
-    // Step 14: Select stories for brief
-    const allScoredRes = await pool.query<ScoredStory>(
-      `SELECT id, title, main_genre, llm_category, importance_score, article_count, source_count, representative_article_id
-       FROM stories
-       WHERE status = 'active' AND importance_score IS NOT NULL
-       ORDER BY importance_score DESC`,
-    );
-    const selected = selectBriefStories(allScoredRes.rows);
+    // Step 14: Build brief candidates from today's stored articles.
+    // The brief is article-centric: we rank today's accepted articles by quality,
+    // using story importance as a boost signal (not as the primary selection key).
+    // Only articles stored in this pipeline run are considered (storedIds).
+    if (storedIds.length > 0) {
+      const candidatesRes = await pool.query<BriefCandidate>(
+        `SELECT
+           a.id, a.title, a.published_at, a.source_name, a.source_domain,
+           a.llm_category, a.llm_tier, a.main_genre,
+           a.api_source_priority, a.description, a.full_text, a.scrape_status,
+           a.story_id,
+           s.importance_score AS story_importance,
+           s.article_count    AS story_article_count
+         FROM articles a
+         LEFT JOIN stories s ON s.id = a.story_id
+         WHERE a.id = ANY($1)
+           AND a.filter_status = 'accepted'`,
+        [storedIds],
+      );
 
-    // Step 15: Summarize today's brief articles
-    const summarizedCount = await summarizeBriefArticles(selected);
-    result.storiesSummarized = summarizedCount;
-    console.log(`[PIPELINE] Summarized ${summarizedCount} brief articles`);
+      const briefSelections = selectBriefArticles(candidatesRes.rows);
+      const briefArtIds = briefSelections.map(s => s.articleId);
 
-    // Step 16: Persist brief
-    const today = new Date().toISOString().split('T')[0];
-    const briefStoryIds = selected.map(s => s.id);
-    const briefArtIds = selected.map(s => s.representative_article_id).filter((id): id is number => id !== null);
+      // Derive the story IDs represented in the brief (for the story_ids column)
+      const briefStoryIds = [...new Set(
+        candidatesRes.rows
+          .filter(a => briefArtIds.includes(a.id) && a.story_id !== null)
+          .map(a => a.story_id as number)
+      )];
 
-    const briefRes = await pool.query<{ id: number }>(
-      `INSERT INTO briefs (brief_date, story_ids, article_ids, user_id)
-       VALUES ($1, $2, $3, NULL)
-       ON CONFLICT (brief_date) WHERE user_id IS NULL
-       DO UPDATE SET story_ids = EXCLUDED.story_ids, article_ids = EXCLUDED.article_ids
-       RETURNING id`,
-      [today, briefStoryIds, briefArtIds],
-    );
-    result.briefId = briefRes.rows[0]?.id ?? null;
+      // Step 15: Summarize selected articles
+      const summarizedCount = await summarizeBriefArticles(briefArtIds);
+      result.storiesSummarized = summarizedCount;
+      console.log(`[PIPELINE] Summarized ${summarizedCount} brief articles`);
+
+      // Step 16: Persist brief
+      const today = new Date().toISOString().split('T')[0];
+      const briefRes = await pool.query<{ id: number }>(
+        `INSERT INTO briefs (brief_date, story_ids, article_ids, user_id)
+         VALUES ($1, $2, $3, NULL)
+         ON CONFLICT (brief_date) WHERE user_id IS NULL
+         DO UPDATE SET story_ids = EXCLUDED.story_ids, article_ids = EXCLUDED.article_ids
+         RETURNING id`,
+        [today, briefStoryIds, briefArtIds],
+      );
+      result.briefId = briefRes.rows[0]?.id ?? null;
+    } else {
+      console.log('[PIPELINE] No articles stored this run — skipping brief assembly');
+    }
 
     // ════════════════════════════════════════════════
     // POST-PIPELINE

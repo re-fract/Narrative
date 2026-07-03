@@ -87,8 +87,9 @@ export function getArticle(id: string | number): Promise<ArticleResponse> {
   return apiRequest<ArticleResponse>(`/articles/${id}`)
 }
 
-export function getStoryTimeline(id: string | number): Promise<TimelineResponse> {
-  return apiRequest<TimelineResponse>(`/stories/${id}/timeline`)
+export function getStoryTimeline(id: string | number, currentArticleId?: number): Promise<TimelineResponse> {
+  const params = currentArticleId != null ? `?currentArticleId=${currentArticleId}` : '';
+  return apiRequest<TimelineResponse>(`/stories/${id}/timeline${params}`)
 }
 
 export function getArticleSimplify(articleId: string | number): Promise<SimplifyResponse> {
