@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { getArticle, getArticleSimplify, getStoryTimeline } from '../api/client'
+import { getArticle, getArticleSimplify, getStoryTimeline, checkFollow, postFollow, deleteFollow } from '../api/client'
 import type { ArticleItem, TimelineArticle } from '../api/client'
 import SimplifyToggle, { type SimplifyMode } from '../components/SimplifyToggle'
 import ParsedArticleBody from '../components/ParsedArticleBody'
@@ -20,6 +20,8 @@ function ArticleViewPage() {
   const [timelineArticles, setTimelineArticles] = useState<TimelineArticle[]>([])
   const [timelineLoading, setTimelineLoading] = useState(false)
   const [resolvedStoryId, setResolvedStoryId] = useState<number | null>(null)
+  const [isFollowed, setIsFollowed] = useState(false)
+  const [followLoading, setFollowLoading] = useState(false)
 
   const fetchTimeline = async (storyId: number, fetchId: number, articleId: number) => {
     setTimelineLoading(true)
@@ -88,9 +90,36 @@ function ArticleViewPage() {
     setArticle(null)
     setTimelineArticles([])
     setResolvedStoryId(null)
+    setIsFollowed(false)
     fetchArticle()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
+
+  // Fetch follow state once story_id is resolved
+  useEffect(() => {
+    if (resolvedStoryId == null) return
+    checkFollow(resolvedStoryId)
+      .then(data => setIsFollowed(data.followed))
+      .catch(() => {})
+  }, [resolvedStoryId])
+
+  const handleToggleFollow = async () => {
+    if (resolvedStoryId == null || followLoading) return
+    setFollowLoading(true)
+    const next = !isFollowed
+    setIsFollowed(next) // optimistic
+    try {
+      if (next) {
+        await postFollow(resolvedStoryId)
+      } else {
+        await deleteFollow(resolvedStoryId)
+      }
+    } catch {
+      setIsFollowed(!next) // rollback
+    } finally {
+      setFollowLoading(false)
+    }
+  }
 
   const handleModeChange = async (nextMode: SimplifyMode) => {
     setMode(nextMode)
@@ -104,7 +133,7 @@ function ArticleViewPage() {
       return
     }
 
-    if (simplifyCache['simple'] || !id) {
+    if (simplifyCache['simple']) {
       setSimplifyError(null)
       return
     }
@@ -249,14 +278,33 @@ function ArticleViewPage() {
               <div className="font-caption text-caption text-on-surface-variant">
                 {article.source_name ?? ''}
               </div>
-              <a
-                href={article.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-6 py-3 border border-primary text-primary font-label-md text-label-md hover:bg-surface-container-low transition-colors duration-200"
-              >
-                Read Original Source
-              </a>
+              <div className="flex items-center gap-3">
+                {resolvedStoryId != null && (
+                  <button
+                    onClick={handleToggleFollow}
+                    disabled={followLoading}
+                    className={`flex items-center gap-1.5 px-4 py-2 border font-label-md text-label-md transition-colors duration-200 ${
+                      isFollowed
+                        ? 'border-primary text-primary bg-primary/5 hover:bg-primary/10'
+                        : 'border-outline-variant text-on-surface-variant hover:border-primary hover:text-primary'
+                    }`}
+                    aria-label={isFollowed ? 'Unfollow this story' : 'Follow this story'}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">
+                      {isFollowed ? 'bookmark_added' : 'bookmark_add'}
+                    </span>
+                    {isFollowed ? 'Following' : 'Follow this Story'}
+                  </button>
+                )}
+                <a
+                  href={article.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-6 py-3 border border-primary text-primary font-label-md text-label-md hover:bg-surface-container-low transition-colors duration-200"
+                >
+                  Read Original Source
+                </a>
+              </div>
             </div>
           </article>
         )}

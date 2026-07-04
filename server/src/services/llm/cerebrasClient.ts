@@ -301,6 +301,99 @@ export async function simplifyArticle(
   return simplified;
 }
 
+/**
+ * Generate a concise human-readable title for a story cluster.
+ *
+ * Sends the titles (+ brief description excerpts) of up to 10 articles in the
+ * story to zai-glm-4.7 and asks for a 4–8 word headline-style title.
+ *
+ * Caching strategy: the title is written directly into stories.title in the DB.
+ * If stories.title is already non-null this function is a no-op (title is only
+ * generated once, even if the user unfollows and re-follows the same story).
+ *
+ * @param storyId - The story's DB id
+ * @param dbPool  - pg Pool for reading articles and writing the title back
+ * @returns The generated (or pre-existing) title, or null on failure
+ */
+export async function generateStoryTitle(
+  storyId: number,
+  dbPool: Pool,
+): Promise<string | null> {
+  // 1. Check if a title already exists — if so, skip generation entirely
+  const existing = await dbPool.query<{ title: string | null }>(
+    'SELECT title FROM stories WHERE id = $1',
+    [storyId],
+  );
+  if (existing.rows.length === 0) return null;
+  if (existing.rows[0].title && existing.rows[0].title.trim().length > 0) {
+    return existing.rows[0].title.trim();
+  }
+
+  // 2. Fetch up to 10 articles for context — titles + short description
+  //    We use titles only (not full_text) to keep the prompt compact and fast.
+  //    Titles are sufficient for a naming task; full_text would waste tokens.
+  const articlesRes = await dbPool.query<{ title: string; description: string | null }>(
+    `SELECT title, description
+     FROM articles
+     WHERE story_id = $1
+       AND filter_status = 'accepted'
+     ORDER BY importance_score DESC NULLS LAST, published_at DESC
+     LIMIT 10`,
+    [storyId],
+  );
+  if (articlesRes.rows.length === 0) return null;
+
+  // Build a compact content block: "1. <title> — <first 150 chars of description>"
+  const articleLines = articlesRes.rows.map((a, i) => {
+    const desc = a.description ? ` — ${a.description.slice(0, 150).trim()}` : '';
+    return `${i + 1}. ${a.title}${desc}`;
+  }).join('\n');
+
+  const userPrompt =
+    `These articles all belong to the same ongoing news story. ` +
+    `Write a concise, headline-style title (4–8 words) that captures the core topic of this story. ` +
+    `Output ONLY the title — no quotes, no punctuation at the end, no explanation.\n\n` +
+    `Articles:\n${articleLines}`;
+
+  try {
+    await cerebrasRateLimiter.waitForSlot(SUMMARIZATION_MODEL);
+
+    const response = await summarizer.chat.completions.create({
+      model: SUMMARIZATION_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are a news editor. When given a list of article headlines from the same story cluster, ' +
+            'you output a single short title (4–8 words) that best names the ongoing story. ' +
+            'No quotes, no trailing punctuation, no explanation — just the title.',
+        },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.3,
+      max_tokens: 4096,  // ⚠️ MUST be 4096+ — zai-glm-4.7 uses reasoning tokens before output
+    });
+
+    const raw = (response.choices[0]?.message?.content ?? '').trim();
+    // Strip any accidental surrounding quotes from the LLM output
+    const title = raw.replace(/^["'"""'']+|["'"""'']+$/g, '').trim();
+
+    if (!title) return null;
+
+    // 3. Persist to stories.title so it is never regenerated
+    await dbPool.query(
+      'UPDATE stories SET title = $1 WHERE id = $2',
+      [title, storyId],
+    );
+
+    return title;
+  } catch (err) {
+    console.error(`[CEREBRAS] generateStoryTitle failed for story ${storyId}:`, err);
+    return null;
+  }
+}
+
+
 // ── Classification User Message Builder ──
 
 /**

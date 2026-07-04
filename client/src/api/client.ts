@@ -75,10 +75,43 @@ export interface FollowItem {
 
 export interface FollowsResponse {
   follows: FollowItem[]
+  story_ids: number[]
 }
 
 export interface FollowActionResponse {
   followed: boolean
+}
+
+export interface FollowCheckResponse {
+  followed: boolean
+}
+
+// A single article inside a followed story feed
+export interface FollowedStoryArticle {
+  id: number
+  story_id: number
+  title: string
+  url: string
+  published_at: string
+  source_name: string | null
+  summary?: string | null
+  llm_category?: string | null
+}
+
+// One followed story with its deduped timeline
+export interface FollowedStoryFeed {
+  storyId: number
+  storyTitle: string
+  storyCategory: string
+  followedAt: string
+  articleCount: number
+  lastUpdatedAt: string
+  newSinceLastSeen: number
+  articles: FollowedStoryArticle[]
+}
+
+export interface FollowUpdatesResponse {
+  stories: FollowedStoryFeed[]
 }
 
 // ─── Endpoints ───
@@ -104,12 +137,24 @@ export function getFollows(): Promise<FollowsResponse> {
   return apiRequest<FollowsResponse>('/follows')
 }
 
+export function getFollowUpdates(): Promise<FollowUpdatesResponse> {
+  return apiRequest<FollowUpdatesResponse>('/follows/updates')
+}
+
+export function checkFollow(storyId: number): Promise<FollowCheckResponse> {
+  return apiRequest<FollowCheckResponse>(`/follows/check?storyId=${storyId}`)
+}
+
 export function postFollow(id: string | number): Promise<FollowActionResponse> {
-  return apiRequest<FollowActionResponse>(`/stories/${id}/follow`, { method: 'POST' })
+  return apiRequest<FollowActionResponse>(`/follows/${id}/follow`, { method: 'POST' })
 }
 
 export function deleteFollow(id: string | number): Promise<FollowActionResponse> {
-  return apiRequest<FollowActionResponse>(`/stories/${id}/follow`, { method: 'DELETE' })
+  return apiRequest<FollowActionResponse>(`/follows/${id}/follow`, { method: 'DELETE' })
+}
+
+export function markStorySeen(storyId: number): Promise<{ updated: boolean }> {
+  return apiRequest<{ updated: boolean }>(`/follows/${storyId}/seen`, { method: 'PATCH' })
 }
 
 export function postChatMessage(

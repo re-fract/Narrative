@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import BriefCard from '../components/BriefCard'
+import { getFollows, postFollow, deleteFollow } from '../api/client'
 import type { BriefArticle } from '../api/client'
 
 interface ApiResponse {
@@ -12,6 +13,7 @@ function HomePage() {
   const [articles, setArticles] = useState<BriefArticle[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [followedStoryIds, setFollowedStoryIds] = useState<Set<number>>(new Set())
 
   const fetchBrief = async () => {
     setIsLoading(true)
@@ -30,8 +32,50 @@ function HomePage() {
     }
   }
 
+  const fetchFollowState = async () => {
+    try {
+      const data = await getFollows()
+      setFollowedStoryIds(new Set(data.story_ids))
+    } catch {
+      // Non-critical — follow state just won't show; silently ignore
+    }
+  }
+
   useEffect(() => {
     fetchBrief()
+    fetchFollowState()
+  }, [])
+
+  const handleToggleFollow = useCallback(async (storyId: number, currentlyFollowed: boolean) => {
+    // Optimistic update first
+    setFollowedStoryIds(prev => {
+      const next = new Set(prev)
+      if (currentlyFollowed) {
+        next.delete(storyId)
+      } else {
+        next.add(storyId)
+      }
+      return next
+    })
+
+    try {
+      if (currentlyFollowed) {
+        await deleteFollow(storyId)
+      } else {
+        await postFollow(storyId)
+      }
+    } catch {
+      // Rollback the optimistic update on failure
+      setFollowedStoryIds(prev => {
+        const next = new Set(prev)
+        if (currentlyFollowed) {
+          next.add(storyId)
+        } else {
+          next.delete(storyId)
+        }
+        return next
+      })
+    }
   }, [])
 
   const todayStr = new Date().toLocaleDateString('en-US', {
@@ -108,6 +152,9 @@ function HomePage() {
                     headline={featured.title}
                     bullets={featured.bullets}
                     variant="featured"
+                    storyId={featured.storyId}
+                    isFollowed={featured.storyId != null && followedStoryIds.has(featured.storyId)}
+                    onToggleFollow={handleToggleFollow}
                   />
                 </Link>
               </div>
@@ -121,6 +168,9 @@ function HomePage() {
                     headline={secondary.title}
                     bullets={secondary.bullets}
                     variant="secondary"
+                    storyId={secondary.storyId}
+                    isFollowed={secondary.storyId != null && followedStoryIds.has(secondary.storyId)}
+                    onToggleFollow={handleToggleFollow}
                   />
                 </Link>
               </div>
@@ -137,6 +187,9 @@ function HomePage() {
                     headline={article.title}
                     bullets={article.bullets}
                     variant="tertiary"
+                    storyId={article.storyId}
+                    isFollowed={article.storyId != null && followedStoryIds.has(article.storyId)}
+                    onToggleFollow={handleToggleFollow}
                   />
                 </Link>
               </div>
