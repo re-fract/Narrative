@@ -104,7 +104,6 @@ function HomePage() {
                 <Link to={`/article/${featured.id}`} className="block">
                   <BriefCard
                     category={featured.category}
-                    sourceName={featured.sourceName}
                     timeAgo={featured.timeAgo}
                     headline={featured.title}
                     bullets={featured.bullets}
@@ -118,7 +117,6 @@ function HomePage() {
                 <Link to={`/article/${secondary.id}`} className="block">
                   <BriefCard
                     category={secondary.category}
-                    sourceName={secondary.sourceName}
                     timeAgo={secondary.timeAgo}
                     headline={secondary.title}
                     bullets={secondary.bullets}
@@ -135,7 +133,6 @@ function HomePage() {
                 <Link to={`/article/${article.id}`} className="block">
                   <BriefCard
                     category={article.category}
-                    sourceName={article.sourceName}
                     timeAgo={article.timeAgo}
                     headline={article.title}
                     bullets={article.bullets}

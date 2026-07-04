@@ -178,13 +178,6 @@ export default function ArticleSidebar({ articleId, storyId, articleTitle }: Pro
         </span>
       </header>
 
-      {/* Tab */}
-      <div className="flex items-center gap-2 pb-stack-sm border-b border-outline-variant px-stack-md shrink-0 pt-stack-sm">
-        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-secondary-container text-on-secondary-container rounded-lg font-label-caps text-label-caps whitespace-nowrap">
-          <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }}>auto_awesome</span> Chat
-        </div>
-      </div>
-
       {/* Chat Body */}
       <div className="flex-grow flex flex-col gap-3 overflow-y-auto px-stack-md py-stack-md pb-4 overflow-x-hidden">
         {messages.map((msg, i) => {
