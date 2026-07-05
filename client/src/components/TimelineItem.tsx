@@ -41,15 +41,7 @@ export default function TimelineItem({
             </span>
           )}
         </div>
-        <button
-          aria-label="Bookmark"
-          className="text-on-surface-variant hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity z-10"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <span className="material-symbols-outlined text-[20px]">bookmark</span>
-        </button>
       </div>
-
       {headline && (
         <h4 className="font-headline-sm text-headline-sm text-primary mb-2">
           {headline}

@@ -15,6 +15,8 @@ interface Props {
   articleId: number | null
   storyId: number | null
   articleTitle: string
+  isOpen: boolean
+  onToggle: () => void
 }
 
 const MAX_HISTORY_PAIRS = 5 // last 5 Q&A pairs sent to LLM as context
@@ -67,7 +69,7 @@ function TypingDots() {
   )
 }
 
-export default function ArticleSidebar({ articleId, storyId, articleTitle }: Props) {
+export default function ArticleSidebar({ articleId, storyId, articleTitle, isOpen, onToggle }: Props) {
   const [messages, setMessages] = useState<Message[]>([welcomeMessage(articleTitle)])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -169,13 +171,45 @@ export default function ArticleSidebar({ articleId, storyId, articleTitle }: Pro
 
   // ── Render ──────────────────────────────────────────────────────────────
   return (
-    <aside className="hidden md:flex fixed right-0 top-16 bottom-0 w-80 bg-surface-container-low border-l border-outline-variant flex-col z-40">
+    <>
+      {/* Toggle button — floats on right edge when sidebar is closed */}
+      {!isOpen && (
+        <button
+          onClick={onToggle}
+          aria-label="Open AI chat"
+          className="hidden md:flex fixed right-0 top-1/2 -translate-y-1/2 z-50 flex-col items-center gap-1.5 py-4 px-2 bg-surface-container-low border border-r-0 border-outline-variant text-on-surface-variant hover:text-secondary hover:border-secondary transition-colors duration-200"
+        >
+          <span className="material-symbols-outlined text-[18px]">auto_awesome</span>
+          <span
+            className="font-label-caps text-label-caps tracking-widest text-[10px]"
+            style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
+          >
+            AI Insights
+          </span>
+          <span className="material-symbols-outlined text-[14px]">chevron_left</span>
+        </button>
+      )}
+
+      <aside
+        className={`hidden md:flex fixed right-0 top-16 bottom-0 w-80 bg-surface-container-low border-l border-outline-variant flex-col z-40 transition-transform duration-300 ${
+          isOpen ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
       {/* Sidebar Header */}
-      <header className="shrink-0 flex flex-col gap-1 p-stack-md border-b border-outline-variant">
-        <h2 className="font-display text-headline-sm font-semibold text-primary">AI Insights</h2>
-        <span className="font-caption text-caption text-on-surface-variant uppercase tracking-wider">
-          Article Analysis
-        </span>
+      <header className="shrink-0 flex items-center justify-between gap-1 p-stack-md border-b border-outline-variant">
+        <div className="flex flex-col gap-1">
+          <h2 className="font-display text-headline-sm font-semibold text-primary">AI Insights</h2>
+          <span className="font-caption text-caption text-on-surface-variant uppercase tracking-wider">
+            Article Analysis
+          </span>
+        </div>
+        <button
+          onClick={onToggle}
+          aria-label="Close AI chat"
+          className="p-1.5 text-on-surface-variant hover:text-primary hover:bg-surface-container transition-colors duration-200"
+        >
+          <span className="material-symbols-outlined text-[20px]">close</span>
+        </button>
       </header>
 
       {/* Chat Body */}
@@ -276,6 +310,7 @@ export default function ArticleSidebar({ articleId, storyId, articleTitle }: Pro
           Answers based only on this article &amp; its story timeline.
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   )
 }

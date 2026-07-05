@@ -4,8 +4,6 @@ import { NavLink } from 'react-router-dom';
 const navItems = [
   { label: 'Daily Brief', to: '/', end: true },
   { label: 'Following', to: '/following' },
-  { label: 'Archive', to: '#' },
-  { label: 'Settings', to: '#' },
 ];
 
 function Navbar() {
@@ -13,8 +11,8 @@ function Navbar() {
 
   const getLinkClass = ({ isActive }: { isActive: boolean }) =>
     isActive
-      ? 'font-label text-sm leading-[1.4] font-medium text-primary border-b-2 border-primary pb-1 transition-opacity'
-      : 'font-label text-sm leading-[1.4] font-medium text-on-surface-variant hover:text-primary hover:bg-surface-container-low transition-colors duration-200 px-1 py-1 rounded';
+      ? 'font-label text-sm leading-[1.4] font-medium text-primary border-b-2 border-primary pb-1 transition-colors duration-200'
+      : 'font-label text-sm leading-[1.4] font-medium text-on-surface-variant hover:text-primary border-b-2 border-transparent hover:border-primary pb-1 transition-colors duration-200';
 
   return (
     <>
@@ -28,7 +26,7 @@ function Navbar() {
             Narrative
           </NavLink>
 
-          {/* Desktop Navigation */}
+          {/* Desktop Navigation — right side */}
           <nav className="hidden md:flex items-center gap-gutter">
             {navItems.map((item) => (
               <NavLink
@@ -41,16 +39,6 @@ function Navbar() {
               </NavLink>
             ))}
           </nav>
-
-          {/* Desktop Account */}
-          <div className="hidden md:flex items-center">
-            <button
-              className="text-primary p-1 hover:bg-surface-container-low rounded-full transition-colors duration-200"
-              aria-label="Account"
-            >
-              <span className="material-symbols-outlined">account_circle</span>
-            </button>
-          </div>
 
           {/* Mobile Hamburger */}
           <button
@@ -92,16 +80,6 @@ function Navbar() {
                 </NavLink>
               ))}
             </nav>
-            <div className="mt-auto pt-4">
-              <button
-                className="text-primary p-1 hover:bg-surface-container-low rounded-full transition-colors duration-200"
-                aria-label="Account"
-              >
-                <span className="material-symbols-outlined">
-                  account_circle
-                </span>
-              </button>
-            </div>
           </div>
         </>
       )}

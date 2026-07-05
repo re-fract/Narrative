@@ -91,11 +91,11 @@ function HomePage() {
   return (
     <div className="max-w-container-max mx-auto px-margin-mobile md:px-margin-desktop py-stack-lg">
       <header className="mb-section-gap border-b border-outline-variant pb-stack-lg">
-        <h1 className="font-display text-display-lg md:text-display-lg text-primary">
-          Good Morning, User
+        <h1 className="font-display text-[40px] leading-[1.1] text-primary -ml-0.5">
+          Good Morning
         </h1>
-        <p className="font-label-caps text-label-caps text-on-surface-variant uppercase tracking-widest">
-          {todayStr} · Your Curated Feed
+        <p className="font-label-caps text-label-caps text-on-surface-variant uppercase tracking-widest mt-2">
+          {todayStr}
         </p>
       </header>
 

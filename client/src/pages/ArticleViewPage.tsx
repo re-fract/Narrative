@@ -22,6 +22,7 @@ function ArticleViewPage() {
   const [resolvedStoryId, setResolvedStoryId] = useState<number | null>(null)
   const [isFollowed, setIsFollowed] = useState(false)
   const [followLoading, setFollowLoading] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
 
   const fetchTimeline = async (storyId: number, fetchId: number, articleId: number) => {
     setTimelineLoading(true)
@@ -162,9 +163,9 @@ function ArticleViewPage() {
 
   return (
     <div className="flex-grow flex w-full relative">
-      <main className="flex-grow w-full md:pr-80 max-w-container-max mx-auto">
+      <main className={`flex-grow w-full max-w-container-max mx-auto transition-[padding] duration-300 ${chatOpen ? 'md:pr-80' : ''}`}>
         {loading ? (
-          <div className="px-margin-mobile md:px-margin-desktop py-section-gap max-w-3xl mx-auto flex flex-col gap-stack-lg">
+          <div className="px-margin-mobile md:px-margin-desktop py-section-gap max-w-4xl mx-auto flex flex-col gap-stack-lg">
             <div className="flex items-center justify-between border-b border-outline-variant pb-stack-sm">
               <div className="animate-pulse bg-surface-container h-4 w-48 rounded"></div>
               <div className="animate-pulse bg-surface-container h-5 w-20 rounded"></div>
@@ -180,7 +181,7 @@ function ArticleViewPage() {
             <div className="animate-pulse bg-surface-container h-10 w-48 rounded"></div>
           </div>
         ) : error || !article ? (
-          <div className="px-margin-mobile md:px-margin-desktop py-section-gap max-w-3xl mx-auto flex flex-col gap-stack-lg items-center justify-center min-h-[50vh]">
+          <div className="px-margin-mobile md:px-margin-desktop py-section-gap max-w-4xl mx-auto flex flex-col gap-stack-lg items-center justify-center min-h-[50vh]">
             <p className="font-body-lg text-body-lg text-on-surface">Failed to load article</p>
             <button
               onClick={fetchArticle}
@@ -190,11 +191,11 @@ function ArticleViewPage() {
             </button>
           </div>
         ) : (
-          <article className="px-margin-mobile md:px-margin-desktop py-section-gap max-w-3xl mx-auto flex flex-col gap-stack-lg">
+          <article className="px-margin-mobile md:px-margin-desktop py-section-gap max-w-4xl mx-auto flex flex-col gap-stack-lg">
             {/* Meta + Simplify Toggle */}
             <div className="flex items-center justify-between border-b border-outline-variant pb-stack-sm">
               <div className="flex items-center gap-3 font-label-caps text-label-caps text-on-surface-variant tracking-widest">
-                <span>BUSINESS &amp; MARKETS</span>
+                <span>{(article.llm_category ?? 'general').toUpperCase()}</span>
                 <span className="w-1 h-1 bg-outline-variant rounded-full"></span>
                 <span>{articleDate}</span>
               </div>
@@ -315,6 +316,8 @@ function ArticleViewPage() {
         articleId={article?.id ?? null}
         storyId={resolvedStoryId}
         articleTitle={article?.title ?? ''}
+        isOpen={chatOpen}
+        onToggle={() => setChatOpen(o => !o)}
       />
     </div>
   )

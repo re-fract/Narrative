@@ -36,6 +36,7 @@ export interface ArticleItem {
   full_text: string | null
   published_at: string
   source_name: string
+  llm_category: string | null
 }
 
 export interface ArticleResponse {

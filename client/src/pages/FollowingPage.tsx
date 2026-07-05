@@ -218,11 +218,11 @@ function FollowingPage() {
   const dateGroups = activeStory ? groupArticlesByDate(activeStory.articles) : []
 
   return (
-    <div className="max-w-container-max mx-auto px-margin-mobile md:px-margin-desktop py-section-gap grid grid-cols-1 md:grid-cols-12 gap-gutter relative">
+    <div className="max-w-container-max mx-auto px-margin-mobile md:px-margin-desktop py-stack-lg grid grid-cols-1 md:grid-cols-12 gap-gutter relative">
       {/* Header */}
       <div className="col-span-1 md:col-span-12 flex justify-between items-end border-b border-outline-variant pb-stack-md mb-stack-lg">
         <div>
-          <h1 className="font-display text-display-lg text-primary mb-unit">
+          <h1 className="font-display text-[40px] leading-[1.1] text-primary mb-unit -ml-0.5">
             Following
           </h1>
           <p className="font-body-lg text-body-lg text-on-surface-variant">
