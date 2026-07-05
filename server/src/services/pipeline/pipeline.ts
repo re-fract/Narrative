@@ -264,27 +264,7 @@ async function storeAcceptedArticles(articles: ScoredArticle[]): Promise<number[
   return res.rows.map(r => r.id);
 }
 
-// ── Ingestion run logging ──
 
-async function logIngestionRun(
-  apiName: string,
-  fetchResult: { articles: unknown[]; stats: Record<string, unknown> },
-): Promise<void> {
-  const creditsUsed = (fetchResult.stats as Record<string, unknown>).creditsConsumed
-    ?? (fetchResult.stats as Record<string, unknown>).creditsUsed
-    ?? (fetchResult.stats as Record<string, unknown>).quotaUsed
-    ?? null;
-  const creditsRemaining = (fetchResult.stats as Record<string, unknown>).creditsRemaining
-    ?? (fetchResult.stats as Record<string, unknown>).quotaRemaining
-    ?? (fetchResult.stats as Record<string, unknown>).usageLimitRemaining
-    ?? null;
-
-  await pool.query(
-    `INSERT INTO ingestion_runs (api_name, articles_fetched, status, started_at, completed_at, credits_used, credits_remaining)
-     VALUES ($1, $2, 'success', NOW(), NOW(), $3, $4)`,
-    [apiName, fetchResult.articles.length, creditsUsed, creditsRemaining],
-  );
-}
 
 // ── PHASE 4 helpers ──
 
@@ -698,13 +678,7 @@ export async function runPipeline(opts?: PipelineOptions): Promise<PipelineResul
     result.articlesDeduplicated = duplicates.length;
     console.log(`[PIPELINE] ${passed.length} passed filters, ${unique.length} after dedup (${rejected.length + duplicates.length} total rejected)`);
 
-    // Log ingestion runs (one per fetcher)
-    await Promise.allSettled([
-      logIngestionRun('worldnews', worldNews),
-      logIngestionRun('thenewsapi', theNewsApi),
-      logIngestionRun('newsdata', newsData),
-      logIngestionRun('webzio', webzio),
-    ]);
+
 
     // ════════════════════════════════════════════════
     // PHASE 2: CLASSIFICATION

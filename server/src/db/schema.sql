@@ -195,30 +195,6 @@ CREATE TABLE IF NOT EXISTS follows (
 CREATE INDEX IF NOT EXISTS idx_follows_story_id ON follows(story_id);
 
 
--- ════════════════════════════════════════════════════════════════
--- INGESTION_RUNS — Track each API polling cycle
--- ════════════════════════════════════════════════════════════════
-CREATE TABLE IF NOT EXISTS ingestion_runs (
-    id                  SERIAL PRIMARY KEY,
-    api_name            VARCHAR(20) NOT NULL,
-    query_label         VARCHAR(50),
-    query_text          TEXT,
-    endpoint            VARCHAR(100),
-    articles_fetched    INTEGER DEFAULT 0,
-    articles_filtered   INTEGER DEFAULT 0,
-    articles_duplicate  INTEGER DEFAULT 0,
-    articles_to_llm     INTEGER DEFAULT 0,
-    latency_ms          INTEGER,
-    credits_used        REAL,
-    credits_remaining   REAL,
-    http_status         INTEGER,
-    status              VARCHAR(15) NOT NULL DEFAULT 'running',
-    error_message       TEXT,
-    started_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    completed_at        TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS idx_runs_api ON ingestion_runs(api_name, started_at DESC);
 
 
 -- ════════════════════════════════════════════════════════════════
@@ -304,35 +280,3 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
 );
 
 
--- ════════════════════════════════════════════════════════════════
--- CHAT + INTERACTIONS (scoped to article within story)
--- ════════════════════════════════════════════════════════════════
-CREATE TABLE IF NOT EXISTS chat_threads (
-    id         SERIAL PRIMARY KEY,
-    story_id   INTEGER REFERENCES stories(id),
-    article_id INTEGER REFERENCES articles(id),  -- Which article the chat is about
-    user_id    INTEGER,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(story_id, article_id, user_id)         -- One thread per user per article-in-story
-);
-
-CREATE TABLE IF NOT EXISTS chat_messages (
-    id         SERIAL PRIMARY KEY,
-    thread_id  INTEGER REFERENCES chat_threads(id),
-    role       VARCHAR(20) NOT NULL,
-    content    TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS interactions (
-    id          SERIAL PRIMARY KEY,
-    story_id    INTEGER REFERENCES stories(id),
-    user_id     INTEGER,
-    action_type VARCHAR(20),
-    created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_chat_threads_story_id ON chat_threads(story_id);
-CREATE INDEX IF NOT EXISTS idx_chat_threads_article_id ON chat_threads(article_id);
-CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id ON chat_messages(thread_id);
-CREATE INDEX IF NOT EXISTS idx_interactions_story_id ON interactions(story_id);

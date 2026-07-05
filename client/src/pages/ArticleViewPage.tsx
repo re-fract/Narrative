@@ -202,13 +202,12 @@ function ArticleViewPage() {
               <SimplifyToggle mode={mode} onChange={handleModeChange} />
             </div>
 
-            {/* Headline + Byline */}
             <header className="flex flex-col gap-2">
               <h1 className="font-display text-3xl md:text-4xl lg:text-5xl font-black leading-tight text-primary">
                 {article.title}
               </h1>
-              <div className="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant">
-                <time dateTime={article.published_at}>
+              <div className="flex items-center justify-between gap-2">
+                <time className="font-body-sm text-body-sm text-on-surface-variant" dateTime={article.published_at}>
                   {new Date(article.published_at).toLocaleDateString('en-GB', {
                     day: 'numeric',
                     month: 'long',
@@ -219,6 +218,23 @@ function ArticleViewPage() {
                     minute: '2-digit',
                   })}
                 </time>
+                {resolvedStoryId != null && (
+                  <button
+                    onClick={handleToggleFollow}
+                    disabled={followLoading}
+                    className={`flex items-center gap-1.5 px-3 py-1 border font-label-md text-label-md text-sm transition-colors duration-200 ${
+                      isFollowed
+                        ? 'border-primary text-primary bg-primary/5 hover:bg-primary/10'
+                        : 'border-outline-variant text-on-surface-variant hover:border-primary hover:text-primary'
+                    }`}
+                    aria-label={isFollowed ? 'Unfollow this story' : 'Follow this story'}
+                  >
+                    <span className="material-symbols-outlined text-[16px]">
+                      {isFollowed ? 'bookmark_added' : 'bookmark_add'}
+                    </span>
+                    {isFollowed ? 'Following' : 'Follow this Story'}
+                  </button>
+                )}
               </div>
             </header>
 
@@ -275,37 +291,18 @@ function ArticleViewPage() {
             })()}
 
             {/* Footer Actions */}
-            <div className="pt-section-gap pb-stack-lg border-t border-outline-variant flex flex-col sm:flex-row gap-4 items-center justify-between">
+            <div className="pt-section-gap pb-stack-lg border-t border-outline-variant flex items-center justify-between">
               <div className="font-caption text-caption text-on-surface-variant">
                 {article.source_name ?? ''}
               </div>
-              <div className="flex items-center gap-3">
-                {resolvedStoryId != null && (
-                  <button
-                    onClick={handleToggleFollow}
-                    disabled={followLoading}
-                    className={`flex items-center gap-1.5 px-4 py-2 border font-label-md text-label-md transition-colors duration-200 ${
-                      isFollowed
-                        ? 'border-primary text-primary bg-primary/5 hover:bg-primary/10'
-                        : 'border-outline-variant text-on-surface-variant hover:border-primary hover:text-primary'
-                    }`}
-                    aria-label={isFollowed ? 'Unfollow this story' : 'Follow this story'}
-                  >
-                    <span className="material-symbols-outlined text-[18px]">
-                      {isFollowed ? 'bookmark_added' : 'bookmark_add'}
-                    </span>
-                    {isFollowed ? 'Following' : 'Follow this Story'}
-                  </button>
-                )}
-                <a
-                  href={article.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-6 py-3 border border-primary text-primary font-label-md text-label-md hover:bg-surface-container-low transition-colors duration-200"
-                >
-                  Read Original Source
-                </a>
-              </div>
+              <a
+                href={article.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-6 py-3 border border-primary text-primary font-label-md text-label-md hover:bg-surface-container-low transition-colors duration-200"
+              >
+                Read Original Source
+              </a>
             </div>
           </article>
         )}
