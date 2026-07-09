@@ -121,6 +121,11 @@ export function getBriefToday(): Promise<BriefResponse> {
   return apiRequest<BriefResponse>('/briefs/today')
 }
 
+export function getFeed(category?: string): Promise<BriefResponse> {
+  const params = category ? `?category=${encodeURIComponent(category)}` : '';
+  return apiRequest<BriefResponse>(`/feed${params}`)
+}
+
 export function getArticle(id: string | number): Promise<ArticleResponse> {
   return apiRequest<ArticleResponse>(`/articles/${id}`)
 }

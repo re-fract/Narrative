@@ -1,36 +1,47 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import BriefCard from '../components/BriefCard'
-import { getFollows, postFollow, deleteFollow } from '../api/client'
+import { getFollows, postFollow, deleteFollow, getBriefToday, getFeed } from '../api/client'
 import type { BriefArticle } from '../api/client'
 
-interface ApiResponse {
-  date: string
-  articles: BriefArticle[]
-}
+type FeedFilter = 'top-stories' | 'all' | 'economics' | 'policy' | 'science' | 'accountability' | 'business'
+
+const FILTERS: { id: FeedFilter; label: string }[] = [
+  { id: 'top-stories', label: 'Top Stories' },
+  { id: 'all',         label: 'All' },
+  { id: 'economics',   label: 'Economics' },
+  { id: 'policy',      label: 'Policy' },
+  { id: 'science',     label: 'Science' },
+  { id: 'accountability', label: 'Accountability' },
+  { id: 'business',    label: 'Business' },
+]
 
 function HomePage() {
+  const [filter, setFilter] = useState<FeedFilter>('top-stories')
   const [articles, setArticles] = useState<BriefArticle[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [followedStoryIds, setFollowedStoryIds] = useState<Set<number>>(new Set())
 
-  const fetchBrief = async () => {
+  const fetchArticles = useCallback(async (activeFilter: FeedFilter) => {
     setIsLoading(true)
     setError(null)
     try {
-      const res = await fetch('/api/briefs/today')
-      if (!res.ok) {
-        throw new Error('Failed to fetch brief')
+      let data: { articles: BriefArticle[] }
+      if (activeFilter === 'top-stories') {
+        data = await getBriefToday()
+      } else if (activeFilter === 'all') {
+        data = await getFeed()
+      } else {
+        data = await getFeed(activeFilter)
       }
-      const data: ApiResponse = await res.json()
       setArticles(data.articles)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [])
 
   const fetchFollowState = async () => {
     try {
@@ -42,7 +53,10 @@ function HomePage() {
   }
 
   useEffect(() => {
-    fetchBrief()
+    fetchArticles(filter)
+  }, [filter, fetchArticles])
+
+  useEffect(() => {
     fetchFollowState()
   }, [])
 
@@ -90,7 +104,7 @@ function HomePage() {
 
   return (
     <div className="max-w-container-max mx-auto px-margin-mobile md:px-margin-desktop py-stack-lg">
-      <header className="mb-section-gap border-b border-outline-variant pb-stack-lg">
+      <header className="mb-stack-lg border-b border-outline-variant pb-stack-lg">
         <h1 className="font-display text-[40px] leading-[1.1] text-primary -ml-0.5">
           Good Morning
         </h1>
@@ -99,11 +113,31 @@ function HomePage() {
         </p>
       </header>
 
+      {/* Filter bar */}
+      <div className="flex items-center gap-2 mb-section-gap overflow-x-auto pb-1 scrollbar-none">
+        {FILTERS.map(({ id, label }) => {
+          const isActive = filter === id
+          return (
+            <button
+              key={id}
+              onClick={() => setFilter(id)}
+              className={`shrink-0 px-4 py-1.5 rounded-full text-sm font-medium transition-colors duration-150 border ${
+                isActive
+                  ? 'bg-primary text-on-primary border-primary'
+                  : 'bg-surface border-outline-variant text-on-surface-variant hover:border-outline hover:text-on-surface'
+              }`}
+            >
+              {label}
+            </button>
+          )
+        })}
+      </div>
+
       {error && (
         <div className="flex flex-col items-center justify-center py-20">
           <p className="text-body-md text-on-surface-variant mb-4">{error}</p>
           <button
-            onClick={fetchBrief}
+            onClick={() => fetchArticles(filter)}
             className="px-4 py-2 bg-primary text-white rounded hover:opacity-90 transition-opacity"
           >
             Retry

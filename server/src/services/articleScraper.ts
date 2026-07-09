@@ -438,11 +438,18 @@ export async function enrichArticles(articleIds: number[]): Promise<void> {
           }
         }
 
-        // 4. Update the article row
-        await pool.query(
-          'UPDATE articles SET full_text = $1, scrape_status = $2 WHERE id = $3',
-          [fullText, scrapeStatus, article.id],
-        );
+        // 4. Update the article row — use explicit connect/release so pg-pool
+        //    always checks out a fresh, verified connection after potentially
+        //    long scrape delays (idle connections may have been killed by RDS).
+        const client = await pool.connect();
+        try {
+          await client.query(
+            'UPDATE articles SET full_text = $1, scrape_status = $2 WHERE id = $3',
+            [fullText, scrapeStatus, article.id],
+          );
+        } finally {
+          client.release();
+        }
       }),
     );
   }

@@ -792,10 +792,40 @@ export async function runPipeline(opts?: PipelineOptions): Promise<PipelineResul
           .map(a => a.story_id as number)
       )];
 
-      // Step 15: Summarize selected articles
-      const summarizedCount = await summarizeBriefArticles(briefArtIds);
+      // Step 15: Summarize selected articles.
+      // We summarize both the 14 brief articles AND the top 30 articles that
+      // will appear in the /api/feed "All" view (same ranking logic), so every
+      // card on the homepage has AI bullets regardless of which tab is active.
+      const feedCandidatesRes = await pool.query<{ id: number; llm_tier: string | null; api_source_priority: number | null }>(
+        `SELECT DISTINCT ON (COALESCE(a.story_id::text, a.id::text))
+                a.id, a.llm_tier, a.api_source_priority
+           FROM articles a
+          WHERE a.filter_status = 'accepted'
+            AND a.published_at >= NOW() - INTERVAL '48 hours'
+            AND a.summary IS NULL
+          ORDER BY COALESCE(a.story_id::text, a.id::text),
+                   a.llm_tier ASC NULLS LAST,
+                   a.api_source_priority ASC NULLS LAST,
+                   a.published_at DESC`,
+      );
+      const feedArtIds = feedCandidatesRes.rows
+        .sort((a, b) => {
+          const tierA = a.llm_tier ?? 'Z';
+          const tierB = b.llm_tier ?? 'Z';
+          if (tierA !== tierB) return tierA < tierB ? -1 : 1;
+          return (a.api_source_priority ?? Infinity) - (b.api_source_priority ?? Infinity);
+        })
+        .map(r => r.id)
+        .slice(0, 30);
+
+
+      // Union: brief picks + feed picks (deduplicated); brief picks first so they
+      // are prioritised if the LLM budget runs out mid-loop.
+      const toSummarise = [...new Set([...briefArtIds, ...feedArtIds])];
+      const summarizedCount = await summarizeBriefArticles(toSummarise);
       result.storiesSummarized = summarizedCount;
-      console.log(`[PIPELINE] Summarized ${summarizedCount} brief articles`);
+      console.log(`[PIPELINE] Summarized ${summarizedCount} articles (brief + feed)`);
+
 
       // Step 16: Persist brief
       const today = new Date().toISOString().split('T')[0];
