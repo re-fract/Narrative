@@ -369,6 +369,11 @@ export async function enrichArticles(articleIds: number[]): Promise<void> {
     (a) => !a.source_domain || !cooldownDomains.has(a.source_domain),
   );
 
+  // Collect results in memory — avoid touching the DB during the long scrape
+  // phase (can be 10-20 min for 150+ articles). Neon scales to zero during that
+  // window; calling pool.connect() per-article fails once compute goes cold.
+  const results: { id: number; fullText: string | null; scrapeStatus: string }[] = [];
+
   // Track stats
   let fullCount = 0;
   let thinCount = 0;
@@ -379,7 +384,7 @@ export async function enrichArticles(articleIds: number[]): Promise<void> {
   for (let i = 0; i < articles.length; i += SCRAPE_CONCURRENCY) {
     const chunk = articles.slice(i, i + SCRAPE_CONCURRENCY);
 
-    await Promise.all(
+    const chunkResults = await Promise.all(
       chunk.map(async (article) => {
         let fullText: string | null = article.full_text;
         let scrapeStatus: string = article.scrape_status ?? 'pending';
@@ -438,20 +443,33 @@ export async function enrichArticles(articleIds: number[]): Promise<void> {
           }
         }
 
-        // 4. Update the article row — use explicit connect/release so pg-pool
-        //    always checks out a fresh, verified connection after potentially
-        //    long scrape delays (idle connections may have been killed by RDS).
-        const client = await pool.connect();
-        try {
-          await client.query(
-            'UPDATE articles SET full_text = $1, scrape_status = $2 WHERE id = $3',
-            [fullText, scrapeStatus, article.id],
-          );
-        } finally {
-          client.release();
-        }
+        return { id: article.id, fullText, scrapeStatus };
       }),
     );
+
+    results.push(...chunkResults);
+  }
+
+  // 4. Bulk-write all results in one DB roundtrip.
+  // All scraping is done by this point, so we only need the DB alive for
+  // a single moment — avoids Neon cold-start timeouts mid-scrape.
+  if (results.length > 0) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const { id, fullText, scrapeStatus } of results) {
+        await client.query(
+          'UPDATE articles SET full_text = $1, scrape_status = $2 WHERE id = $3',
+          [fullText, scrapeStatus, id],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   console.log(
