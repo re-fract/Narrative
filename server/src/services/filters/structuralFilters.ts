@@ -52,6 +52,8 @@ const NON_LATIN_RANGES: [number, number][] = [
   [0x0750, 0x077F], // Arabic Supplement
   [0xFB50, 0xFDFF], // Arabic Presentation Forms-A
   [0x0590, 0x05FF], // Hebrew
+  [0x0400, 0x04FF], // Cyrillic (Russian, Bulgarian, Ukrainian, Serbian, etc.)
+  [0x0500, 0x052F], // Cyrillic Supplement
 ];
 
 /** Check if a character code point falls in any non-Latin range. */

@@ -2,6 +2,7 @@ import { Agent, fetch as undiFetch } from 'undici';
 import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
 import { pool } from '../db/index.js';
+import { cleanNullBytes } from './stringUtils.js';
 import {
   SCRAPE_CONCURRENCY,
   SCRAPE_DOMAIN_COOLDOWN_HOURS,
@@ -460,7 +461,7 @@ export async function enrichArticles(articleIds: number[]): Promise<void> {
       for (const { id, fullText, scrapeStatus } of results) {
         await client.query(
           'UPDATE articles SET full_text = $1, scrape_status = $2 WHERE id = $3',
-          [fullText, scrapeStatus, id],
+          [cleanNullBytes(fullText), scrapeStatus, id],
         );
       }
       await client.query('COMMIT');

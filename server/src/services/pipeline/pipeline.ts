@@ -27,6 +27,7 @@ import { selectBriefArticles } from '../stories/briefSelection.js';
 import { aggregateDailyMetrics } from './metrics.js';
 import { CLASSIFICATION_BATCH_SIZE } from '../../config/constants.js';
 import type { NormalizedArticle, ScoredArticle, FilterRejection, BriefCandidate } from '../../types/index.js';
+import { cleanNullBytes } from '../stringUtils.js';
 
 // ── Exported result type ──
 
@@ -86,7 +87,7 @@ async function logPipelineFailure(runId: number, err: unknown): Promise<void> {
   const message = err instanceof Error ? err.message : String(err);
   await pool.query(
     `UPDATE pipeline_runs SET completed_at = NOW(), status = 'failed', error_message = $1 WHERE id = $2`,
-    [message, runId],
+    [cleanNullBytes(message), runId],
   );
 }
 
@@ -94,6 +95,8 @@ async function logPipelineFailure(runId: number, err: unknown): Promise<void> {
 
 async function bulkInsertRejections(items: FilterRejection[], stage: 'filter' | 'llm'): Promise<void> {
   if (items.length === 0) return;
+
+  const cleanItems = cleanNullBytes(items);
 
   const urls: string[] = [];
   const titles: (string | null)[] = [];
@@ -106,7 +109,7 @@ async function bulkInsertRejections(items: FilterRejection[], stage: 'filter' | 
   const llmReasons: (string | null)[] = [];
   const contextLens: (number | null)[] = [];
 
-  for (const item of items) {
+  for (const item of cleanItems) {
     urls.push(item.url);
     titles.push(item.title ?? null);
     sourceApis.push(item.sourceApi);
@@ -134,6 +137,8 @@ async function bulkInsertRejections(items: FilterRejection[], stage: 'filter' | 
 
 async function storeAcceptedArticles(articles: ScoredArticle[]): Promise<number[]> {
   if (articles.length === 0) return [];
+
+  const cleanArticles = cleanNullBytes(articles);
 
   // Build parallel arrays for each column
   const externalIds: (string | null)[] = [];
@@ -171,7 +176,7 @@ async function storeAcceptedArticles(articles: ScoredArticle[]): Promise<number[
   const apiSocials: (string | null)[] = [];
   const apiDuplicateFlags: (boolean | null)[] = [];
 
-  for (const a of articles) {
+  for (const a of cleanArticles) {
     externalIds.push(a.externalId ?? null);
     sourceApis.push(a.sourceApi);
     urls.push(a.url);
@@ -574,15 +579,15 @@ async function summarizeBriefArticles(articleIds: number[]): Promise<number> {
 
     const text =
       (art.full_text && art.full_text.length >= 50) ? art.full_text
-      : (art.content && art.content.length >= 50) ? art.content
-      : (art.description && art.description.length >= 50) ? art.description
-      : null;
+        : (art.content && art.content.length >= 50) ? art.content
+          : (art.description && art.description.length >= 50) ? art.description
+            : null;
     if (!text) continue;
 
     try {
       const summary = await generateArticleSummary(art.title, text);
       if (summary) {
-        await pool.query('UPDATE articles SET summary = $1 WHERE id = $2', [summary, artId]);
+        await pool.query('UPDATE articles SET summary = $1 WHERE id = $2', [cleanNullBytes(summary), artId]);
         summarized++;
       }
     } catch (err) {
@@ -636,8 +641,8 @@ export async function runPipeline(opts?: PipelineOptions): Promise<PipelineResul
     // Destructure with empty-array fallback for failed fetchers
     const worldNews = fetchResults[0].status === 'fulfilled' ? fetchResults[0].value : { articles: [] as NormalizedArticle[], stats: { querySlotsRun: 0, apiCallsUsed: 0, totalRawArticles: 0, normalizedCount: 0, duplicateUrlsDropped: 0, quotaUsed: 0, quotaRemaining: 50, quotaExhausted: false } };
     const theNewsApi = fetchResults[1].status === 'fulfilled' ? fetchResults[1].value : { articles: [] as NormalizedArticle[], stats: { querySlotsRun: 0, apiCallsUsed: 0, totalRawArticles: 0, normalizedCount: 0, f9RejectedCount: 0, duplicateUrlsDropped: 0, creditsConsumed: 0, creditsRemaining: 0 } };
-    const newsData   = fetchResults[2].status === 'fulfilled' ? fetchResults[2].value : { articles: [] as NormalizedArticle[], stats: { querySlotsRun: 0, apiCallsUsed: 0, creditsConsumed: 0, totalRawArticles: 0, normalizedCount: 0, duplicateUrlsDropped: 0, creditsRemaining: 0 } };
-    const webzio     = fetchResults[3].status === 'fulfilled' ? fetchResults[3].value : { articles: [] as NormalizedArticle[], stats: { queriesRun: 0, apiCallsUsed: 0, totalRawPosts: 0, normalizedCount: 0, duplicateUrlsDropped: 0 } };
+    const newsData = fetchResults[2].status === 'fulfilled' ? fetchResults[2].value : { articles: [] as NormalizedArticle[], stats: { querySlotsRun: 0, apiCallsUsed: 0, creditsConsumed: 0, totalRawArticles: 0, normalizedCount: 0, duplicateUrlsDropped: 0, creditsRemaining: 0 } };
+    const webzio = fetchResults[3].status === 'fulfilled' ? fetchResults[3].value : { articles: [] as NormalizedArticle[], stats: { queriesRun: 0, apiCallsUsed: 0, totalRawPosts: 0, normalizedCount: 0, duplicateUrlsDropped: 0 } };
 
     // Log which fetchers failed
     const fetcherNames = ['worldnews', 'thenewsapi', 'newsdata', 'webzio'] as const;

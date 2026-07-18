@@ -34,15 +34,16 @@ router.get('/today', async (req, res) => {
 
     // Try today's brief first
     let briefResult = await pool.query(
-      'SELECT * FROM briefs WHERE brief_date = $1',
+      'SELECT * FROM briefs WHERE brief_date = $1 AND user_id IS NULL',
       [today]
     );
 
-    // Fallback: yesterday's brief (stale but better than empty)
+    // Fallback: yesterday's brief (pipeline runs at ~11pm IST and may complete
+    // after UTC midnight, storing the brief under the previous calendar date)
     if (briefResult.rows.length === 0) {
       const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
       briefResult = await pool.query(
-        'SELECT * FROM briefs WHERE brief_date = $1',
+        'SELECT * FROM briefs WHERE brief_date = $1 AND user_id IS NULL',
         [yesterday]
       );
     }
