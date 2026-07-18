@@ -2,9 +2,9 @@ name: Daily News Ingestion Pipeline
 
 on:
   schedule:
-    # 11:30 PM IST is 18:00 UTC (or 11:00 PM IST is 17:30 UTC. Let's use 17:30 UTC for 11:00 PM IST)
+    # 11:30 PM IST is 18:00 UTC (Thus, 17:30 UTC for 11:00 PM IST)
     - cron: '30 17 * * *'
-  workflow_dispatch: # Allows manual trigger from the GitHub Actions UI
+  workflow_dispatch:
 
 jobs:
   run-pipeline:
