@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db/index.js';
 import { buildStoryTimeline } from '../services/stories/timelineBuilder.js';
-import { generateStoryTitle } from '../services/llm/cerebrasClient.js';
+import { generateStoryTitle } from '../services/llm/groqClient.js';
 
 const router = Router();
 

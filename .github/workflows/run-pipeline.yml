@@ -30,7 +30,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           WEBZ_API_KEY: ${{ secrets.WEBZ_API_KEY }}
           WORLDNEWS_API_KEY: ${{ secrets.WORLDNEWS_API_KEY }}
           THENEWS_API_KEY: ${{ secrets.THENEWS_API_KEY }}

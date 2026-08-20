@@ -2,7 +2,7 @@
  * pipeline.ts — Pipeline Orchestrator (5-phase / 18-step)
  *
  * Phase 1: Ingestion   (fetch 4 APIs → F1-F7 → F8 dedup)
- * Phase 2: Classification (Cerebras gpt-oss-120b → store Tier A+B → log C+D)
+ * Phase 2: Classification (Groq openai/gpt-oss-120b → store Tier A+B → log C+D)
  * Phase 3: Enrichment  (scrape + WorldNewsAPI lookup → Gemini embeddings)
  * Phase 4: Story Intelligence (match → cluster → dedup → metadata → score)
  * Phase 5: Brief Assembly (select → summarize → persist)
@@ -15,7 +15,7 @@ import { fetchNewsdata } from '../fetchers/newsdataFetcher.js';
 import { fetchWebzio } from '../fetchers/webzioFetcher.js';
 import { runStructuralFilters, classifyRegion } from '../filters/structuralFilters.js';
 import { deduplicateArticles } from '../filters/deduplicator.js';
-import { classifyArticleBatch, generateArticleSummary } from '../llm/cerebrasClient.js';
+import { classifyArticleBatch, generateArticleSummary } from '../llm/groqClient.js';
 import { enrichArticles } from '../articleScraper.js';
 import { batchEmbedArticles } from '../llm/geminiClient.js';
 import { storyMatchScore, weightedCentroidUpdate, SIMILARITY_THRESHOLD_EXISTING, SIMILARITY_THRESHOLD_NEW } from '../stories/storyCluster.js';
@@ -689,7 +689,7 @@ export async function runPipeline(opts?: PipelineOptions): Promise<PipelineResul
     // PHASE 2: CLASSIFICATION
     // ════════════════════════════════════════════════
 
-    // Step 5: Classify via Cerebras gpt-oss-120b (batch of CLASSIFICATION_BATCH_SIZE)
+    // Step 5: Classify via Groq openai/gpt-oss-120b (batch of CLASSIFICATION_BATCH_SIZE)
     const classified: ScoredArticle[] = [];
     for (let i = 0; i < unique.length; i += CLASSIFICATION_BATCH_SIZE) {
       const batch = unique.slice(i, i + CLASSIFICATION_BATCH_SIZE);

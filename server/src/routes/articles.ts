@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../db/index.js';
-import { simplifyArticle } from '../services/llm/cerebrasClient.js';
+import { simplifyArticle } from '../services/llm/groqClient.js';
 
 const router = Router();
 
@@ -29,7 +29,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// GET /api/articles/:id/simplify — simplify an article via Cerebras
+// GET /api/articles/:id/simplify — simplify an article via Gemini
 // Results cached in `simplifications` table (article_id, level).
 router.get('/:id/simplify', async (req, res) => {
   try {

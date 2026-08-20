@@ -1,94 +1,91 @@
 /**
- * cerebrasClient.ts — Cerebras LLM client
+ * groqClient.ts — Groq LLM client
  *
- * Two models:
- *   - gpt-oss-120b: Classification (batch of 5, tier A/B/C/D)
- *   - zai-glm-4.7: Summarization + Simplification (per-article)
+ * Two model groups:
+ *   - openai/gpt-oss-120b (Groq): Classification (batch of 5, tier A/B/C/D)
+ *   - gemini-3.6-flash (Google): Summarization + Simplification (per-article)
  *
- * Uses OpenAI SDK with custom baseURL (Cerebras is OpenAI-compatible).
+ * Groq uses OpenAI-compatible SDK with custom baseURL.
+ * Summarization uses the Google GenAI SDK (already in use for embeddings).
  *
- * ⚠️ Critical: Do NOT use response_format: { type: 'json_object' }
- *   gpt-oss-120b returns clean JSON arrays natively.
+ * ⚠️ Critical: Do NOT use response_format: { type: 'json_object' } for classification.
+ *   openai/gpt-oss-120b returns clean JSON arrays natively.
  *   json_object mode wraps in {type:"array",items:[...]} — harder to parse.
- *
- * ⚠️ Critical: zai-glm-4.7 MUST use max_tokens: 4096 (summaries) or 8192 (simplify).
- *   The model uses 1000+ reasoning tokens before producing content.
- *   Lower values produce truncated/garbage output.
  */
 
 import OpenAI from 'openai';
+import { GoogleGenAI } from '@google/genai';
 import { CLASSIFICATION_SYSTEM_PROMPT } from '../../config/classificationPrompt.js';
 import { SUMMARY_SYSTEM_PROMPT, SIMPLIFY_SYSTEM_PROMPT } from '../../config/summarizationPrompt.js';
 import {
   CLASSIFICATION_BATCH_SIZE,
   CLASSIFICATION_MODEL,
   CLASSIFICATION_TEMPERATURE,
-  SUMMARIZATION_MODEL,
-  SUMMARIZATION_TEMPERATURE,
   SUMMARIZATION_MAX_TOKENS,
   SIMPLIFICATION_MAX_TOKENS,
+  GROQ_RPM,
+  GROQ_RPD,
   VALID_LLM_CATEGORIES,
   VALID_LLM_TIERS,
 } from '../../config/constants.js';
 import type { NormalizedArticle, ClassificationResult, ScoredArticle } from '../../types/index.js';
 import type { Pool } from 'pg';
 
-// ── OpenAI Clients ──
+// ── Groq Client (classification) ──
 
 const classifier = new OpenAI({
-  apiKey: process.env.CEREBRAS_API_KEY,
-  baseURL: 'https://api.cerebras.ai/v1',  // ✅ VERIFIED Phase 0 — NOT inference.cerebras.ai
+  apiKey: process.env.GROQ_API_KEY,
+  baseURL: 'https://api.groq.com/openai/v1',
 });
 
-const summarizer = new OpenAI({
-  apiKey: process.env.CEREBRAS_API_KEY,
-  baseURL: 'https://api.cerebras.ai/v1',  // ✅ VERIFIED Phase 0
-});
+// ── Gemini Client (summarization) ──
 
-// ── Rate Limiter ──
+const geminiApiKey = process.env.GEMINI_API_KEY;
+const genAI = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
 
-class CerebrasRateLimiter {
-  private rpmCount: Map<string, number> = new Map();    // per model (Cerebras limits per model, not per key)
-  private rpdCount: Map<string, number> = new Map();
+const GEMINI_SUMMARIZATION_MODEL = 'gemini-3.6-flash';
+
+// ── Rate Limiter (Groq classification) ──
+
+class GroqRateLimiter {
+  private rpmCount: number = 0;
+  private rpdCount: number = 0;
   private minuteStart: number = Date.now();
   private lastResetDate: string = new Date().toISOString().slice(0, 10);
-  private lastRequestTime: number = 0;                   // inter-request spacing
-  private readonly RPM = 5;   // legacy — file unused, kept for reference
-  private readonly RPD = 2400;
-  private readonly MIN_REQUEST_GAP_MS = 2_000;          // 2s gap — prevents burst that exhausts 30K tok/min quota
+  private lastRequestTime: number = 0;
+  private readonly RPM = GROQ_RPM;
+  private readonly RPD = GROQ_RPD;
+  // With 30 RPM we can afford a tighter gap; 2s still safely avoids TPM bursts.
+  private readonly MIN_REQUEST_GAP_MS = 2_000;
 
-  /** Reset RPD counters when the UTC day rolls over. */
   private checkDayReset(): void {
     const today = new Date().toISOString().slice(0, 10);
     if (today !== this.lastResetDate) {
-      this.rpdCount.clear();
+      this.rpdCount = 0;
       this.lastResetDate = today;
     }
   }
 
-  async waitForSlot(model: string): Promise<void> {
+  async waitForSlot(): Promise<void> {
     this.checkDayReset();
 
-    // Enforce minimum gap between requests (prevents burst token exhaustion)
     const gapNeeded = this.lastRequestTime + this.MIN_REQUEST_GAP_MS - Date.now();
     if (gapNeeded > 0) await sleep(gapNeeded);
 
     const now = Date.now();
     if (now - this.minuteStart > 60_000) {
-      this.rpmCount.clear();
+      this.rpmCount = 0;
       this.minuteStart = now;
     }
-    const rpm = this.rpmCount.get(model) ?? 0;
-    if (rpm >= this.RPM) {
+    if (this.rpmCount >= this.RPM) {
       const waitMs = this.minuteStart + 60_000 - now + 100;
       await sleep(waitMs);
-      this.rpmCount.set(model, 0);
+      this.rpmCount = 0;
       this.minuteStart = Date.now();
     }
-    const rpd = this.rpdCount.get(model) ?? 0;
-    if (rpd >= this.RPD) throw new Error('RPD_EXHAUSTED');
-    this.rpmCount.set(model, (this.rpmCount.get(model) ?? 0) + 1);
-    this.rpdCount.set(model, rpd + 1);
+    if (this.rpdCount >= this.RPD) throw new Error('RPD_EXHAUSTED');
+    this.rpmCount++;
+    this.rpdCount++;
     this.lastRequestTime = Date.now();
   }
 }
@@ -97,13 +94,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/** Singleton rate limiter used by all LLM functions */
-export const cerebrasRateLimiter = new CerebrasRateLimiter();
+/** Singleton rate limiter used by all classification functions */
+export const groqRateLimiter = new GroqRateLimiter();
 
-// ── Classification (gpt-oss-120b) ──
+// ── Classification (openai/gpt-oss-120b via Groq) ──
 
 /**
- * Classify a batch of up to 5 articles using gpt-oss-120b.
+ * Classify a batch of up to 5 articles using openai/gpt-oss-120b on Groq.
  * Returns ScoredArticle[] with llmTier, llmCategory, llmReason, filterStatus.
  */
 export async function classifyArticleBatch(
@@ -111,7 +108,7 @@ export async function classifyArticleBatch(
 ): Promise<ScoredArticle[]> {
   if (articles.length === 0) return [];
 
-  await cerebrasRateLimiter.waitForSlot(CLASSIFICATION_MODEL);
+  await groqRateLimiter.waitForSlot();
 
   let retried = false;
 
@@ -139,7 +136,7 @@ export async function classifyArticleBatch(
         // JSON parse error — retry once, then all Tier C
         if (!retried) {
           retried = true;
-          await cerebrasRateLimiter.waitForSlot(CLASSIFICATION_MODEL);
+          await groqRateLimiter.waitForSlot();
           return attempt();
         }
         return articles.map(a => ({
@@ -191,7 +188,7 @@ export async function classifyArticleBatch(
         if (!retried) {
           retried = true;
           await sleep(5_000);
-          await cerebrasRateLimiter.waitForSlot(CLASSIFICATION_MODEL);
+          await groqRateLimiter.waitForSlot();
           return attempt();
         }
         return articles.map(a => ({
@@ -210,7 +207,7 @@ export async function classifyArticleBatch(
   return attempt();
 }
 
-// ── Summarization (zai-glm-4.7) ──
+// ── Summarization (gemini-3.6-flash) ──
 
 /**
  * Generate a 3-bullet summary for a single article.
@@ -220,37 +217,31 @@ export async function generateArticleSummary(
   title: string,
   text: string,
 ): Promise<string> {
+  if (!genAI) throw new Error('GEMINI_API_KEY not set');
+
   const MAX_RETRIES = 3;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      await cerebrasRateLimiter.waitForSlot(SUMMARIZATION_MODEL);
-
-      const response = await summarizer.chat.completions.create({
-        model: SUMMARIZATION_MODEL,
-        messages: [
-          { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
-          {
-            role: 'user',
-            content: `Summarize this article in exactly 3 concise bullet points:\n\nTitle: ${title}\n\n${text}`,
-          },
-        ],
-        temperature: SUMMARIZATION_TEMPERATURE,
-        max_tokens: SUMMARIZATION_MAX_TOKENS,  // ⚠️ MUST be 4096 — model uses 1000+ reasoning tokens
+      const result = await genAI.models.generateContent({
+        model: GEMINI_SUMMARIZATION_MODEL,
+        contents: [{
+          role: 'user',
+          parts: [{ text: `${SUMMARY_SYSTEM_PROMPT}\n\nSummarize this article in exactly 3 concise bullet points:\n\nTitle: ${title}\n\n${text}` }],
+        }],
       });
-
-      return response.choices[0]?.message?.content ?? '';
+      return result.text ?? '';
     } catch (err: unknown) {
-      const httpErr = err as { status?: number };
-      if (httpErr.status === 429 && attempt < MAX_RETRIES - 1) {
-        const backoffMs = 15_000 * (attempt + 1);  // 15s, 30s, …
-        console.warn(`[CEREBRAS] Summary 429 for "${title.slice(0, 40)}" — retry ${attempt + 1}/${MAX_RETRIES} in ${backoffMs / 1000}s`);
+      const isRateLimit = err instanceof Error && /429|RESOURCE_EXHAUSTED/i.test(err.message);
+      if (isRateLimit && attempt < MAX_RETRIES - 1) {
+        const backoffMs = 15_000 * (attempt + 1);
+        console.warn(`[GROQ] Summary rate-limited for "${title.slice(0, 40)}" — retry ${attempt + 1}/${MAX_RETRIES} in ${backoffMs / 1000}s`);
         await sleep(backoffMs);
         continue;
       }
       throw err;
     }
   }
-  return '';  // unreachable, but TS needs it
+  return '';
 }
 
 /**
@@ -262,6 +253,8 @@ export async function simplifyArticle(
   text: string,
   dbPool: Pool,
 ): Promise<string> {
+  if (!genAI) throw new Error('GEMINI_API_KEY not set');
+
   // Check cache first
   const cached = await dbPool.query(
     'SELECT text FROM simplifications WHERE article_id = $1 AND level = $2',
@@ -272,22 +265,15 @@ export async function simplifyArticle(
   }
 
   // Generate simplification
-  await cerebrasRateLimiter.waitForSlot(SUMMARIZATION_MODEL);
-
-  const response = await summarizer.chat.completions.create({
-    model: SUMMARIZATION_MODEL,
-    messages: [
-      { role: 'system', content: SIMPLIFY_SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: `Simplify for a general reader — 2-3 paragraphs, 120-180 words, essay format, no bullet points:\n\n${text}`,
-      },
-    ],
-    temperature: SUMMARIZATION_TEMPERATURE,
-    max_tokens: SIMPLIFICATION_MAX_TOKENS,  // ⚠️ MUST be 8192 — simplify needs longer output
+  const result = await genAI.models.generateContent({
+    model: GEMINI_SUMMARIZATION_MODEL,
+    contents: [{
+      role: 'user',
+      parts: [{ text: `${SIMPLIFY_SYSTEM_PROMPT}\n\nSimplify for a general reader — 2-3 paragraphs, 120-180 words, essay format, no bullet points:\n\n${text}` }],
+    }],
   });
 
-  const simplified = response.choices[0]?.message?.content ?? '';
+  const simplified = result.text ?? '';
 
   // Cache result
   await dbPool.query(
@@ -303,7 +289,7 @@ export async function simplifyArticle(
  * Generate a concise human-readable title for a story cluster.
  *
  * Sends the titles (+ brief description excerpts) of up to 10 articles in the
- * story to zai-glm-4.7 and asks for a 4–8 word headline-style title.
+ * story to gemini-3.6-flash and asks for a 4–8 word headline-style title.
  *
  * Caching strategy: the title is written directly into stories.title in the DB.
  * If stories.title is already non-null this function is a no-op (title is only
@@ -317,6 +303,8 @@ export async function generateStoryTitle(
   storyId: number,
   dbPool: Pool,
 ): Promise<string | null> {
+  if (!genAI) return null;
+
   // 1. Check if a title already exists — if so, skip generation entirely
   const existing = await dbPool.query<{ title: string | null }>(
     'SELECT title FROM stories WHERE id = $1',
@@ -327,9 +315,7 @@ export async function generateStoryTitle(
     return existing.rows[0].title.trim();
   }
 
-  // 2. Fetch up to 10 articles for context — titles + short description
-  //    We use titles only (not full_text) to keep the prompt compact and fast.
-  //    Titles are sufficient for a naming task; full_text would waste tokens.
+  // 2. Fetch up to 10 articles for context
   const articlesRes = await dbPool.query<{ title: string; description: string | null }>(
     `SELECT title, description
      FROM articles
@@ -341,7 +327,6 @@ export async function generateStoryTitle(
   );
   if (articlesRes.rows.length === 0) return null;
 
-  // Build a compact content block: "1. <title> — <first 150 chars of description>"
   const articleLines = articlesRes.rows.map((a, i) => {
     const desc = a.description ? ` — ${a.description.slice(0, 150).trim()}` : '';
     return `${i + 1}. ${a.title}${desc}`;
@@ -354,25 +339,21 @@ export async function generateStoryTitle(
     `Articles:\n${articleLines}`;
 
   try {
-    await cerebrasRateLimiter.waitForSlot(SUMMARIZATION_MODEL);
-
-    const response = await summarizer.chat.completions.create({
-      model: SUMMARIZATION_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content:
+    const result = await genAI.models.generateContent({
+      model: GEMINI_SUMMARIZATION_MODEL,
+      contents: [{
+        role: 'user',
+        parts: [{
+          text:
             'You are a news editor. When given a list of article headlines from the same story cluster, ' +
             'you output a single short title (4–8 words) that best names the ongoing story. ' +
-            'No quotes, no trailing punctuation, no explanation — just the title.',
-        },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.3,
-      max_tokens: 4096,  // ⚠️ MUST be 4096+ — zai-glm-4.7 uses reasoning tokens before output
+            'No quotes, no trailing punctuation, no explanation — just the title.\n\n' +
+            userPrompt,
+        }],
+      }],
     });
 
-    const raw = (response.choices[0]?.message?.content ?? '').trim();
+    const raw = (result.text ?? '').trim();
     // Strip any accidental surrounding quotes from the LLM output
     const title = raw.replace(/^["'"""'']+|["'"""'']+$/g, '').trim();
 
@@ -386,7 +367,7 @@ export async function generateStoryTitle(
 
     return title;
   } catch (err) {
-    console.error(`[CEREBRAS] generateStoryTitle failed for story ${storyId}:`, err);
+    console.error(`[GROQ] generateStoryTitle failed for story ${storyId}:`, err);
     return null;
   }
 }
@@ -423,36 +404,21 @@ export function buildClassificationUserMessage(articles: NormalizedArticle[]): s
 export function formatApiMetadata(article: NormalizedArticle): string {
   const signals: string[] = [];
 
-  // Webz.io IPTC category
   if (article.apiIptcCategory) signals.push(`IPTC Category: ${article.apiIptcCategory}`);
 
-  // Webz.io entities
   if (article.apiEntities?.length) {
     const entities = article.apiEntities
       .map(e => `${e.name} (${e.type})`).slice(0, 5).join(', ');
     signals.push(`Entities: ${entities}`);
   }
 
-  // WorldNewsAPI / Webz.io sentiment
   if (article.apiSentiment != null) signals.push(`Sentiment: ${article.apiSentiment}`);
-
-  // TheNewsAPI relevance score
   if (article.apiRelevanceScore != null) signals.push(`API Relevance Score: ${article.apiRelevanceScore}`);
-
-  // NewsData.io source priority
   if (article.apiSourcePriority != null) signals.push(`Source Authority Rank: ${article.apiSourcePriority}`);
-
-  // API keywords
   if (article.apiKeywords?.length) signals.push(`Keywords: ${article.apiKeywords.slice(0, 8).join(', ')}`);
-
-  // Non-IPTC API category
   if (article.apiCategory && !article.apiIptcCategory) signals.push(`API Category: ${article.apiCategory}`);
-
-  // Country signal
   if (article.apiCountry) signals.push(`Country: ${article.apiCountry}`);
 
-  // Thin-context note for very short snippets — tells LLM to apply Rule 13
-  // Catches TheNewsAPI (~120 chars), near-stubs, but not 200-char Webz.io descriptions.
   const totalContext = (article.description?.length ?? 0) + (article.content?.length ?? 0);
   if (totalContext < 200) {
     signals.push(`Short API snippet only (${totalContext} chars) — apply Rule 13 before assigning Tier A`);

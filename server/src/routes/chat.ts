@@ -9,7 +9,7 @@
  *   - Fetches full_text for each timeline article
  *   - Builds a system prompt with the current article text first (up to 2500 chars),
  *     then remaining timeline articles (budget split evenly across them)
- *   - Calls Cerebras zai-glm-4.7 (via the existing OpenAI-compatible client)
+ *   - Calls Groq openai/gpt-oss-20b (OpenAI-compatible client)
  *   - Returns { answer: string }
  *
  * Stateless by design — no chat history, no DB writes.
@@ -24,10 +24,10 @@ const router = Router();
 const TIMELINE_WINDOW_DAYS = 14;
 const TIMELINE_DEDUP_THRESHOLD = 0.85;
 
-// Reuse the same Cerebras client setup as cerebrasClient.ts
-const cerebras = new OpenAI({
-  apiKey: process.env.CEREBRAS_API_KEY,
-  baseURL: 'https://api.cerebras.ai/v1',
+// Groq client for AI chat (openai/gpt-oss-20b)
+const groq = new OpenAI({
+  apiKey: process.env.GROQ_API_KEY,
+  baseURL: 'https://api.groq.com/openai/v1',
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -238,12 +238,12 @@ router.post('/', async (req, res) => {
       { role: 'user', content: question.trim() },
     ];
 
-    // Call Cerebras — MUST use max_tokens 4096+, model uses 1000+ reasoning tokens
-    const response = await cerebras.chat.completions.create({
-      model: 'zai-glm-4.7',
+    // Call Groq — openai/gpt-oss-20b: 30 RPM, 8K TPM, 200K TPD
+    const response = await groq.chat.completions.create({
+      model: 'openai/gpt-oss-20b',
       messages,
       temperature: 0.3,
-      max_tokens: 4096,
+      max_tokens: 1024,
     });
 
     const answer = response.choices[0]?.message?.content;

@@ -1,20 +1,18 @@
 // ── Classification ──
-export const CLASSIFICATION_BATCH_SIZE = 5;         // Articles per Cerebras 120b batch
-export const CLASSIFICATION_MODEL = 'gpt-oss-120b';
+export const CLASSIFICATION_BATCH_SIZE = 5;         // Articles per Groq 120b batch
+export const CLASSIFICATION_MODEL = 'openai/gpt-oss-120b';
 export const CLASSIFICATION_TEMPERATURE = 0.1;
 
 // ── Summarization ──
-export const SUMMARIZATION_MODEL = 'zai-glm-4.7';
+export const SUMMARIZATION_MODEL = 'gemini-3.6-flash';
 export const SUMMARIZATION_TEMPERATURE = 0.2;
-export const SUMMARIZATION_MAX_TOKENS = 4096;       // ⚠️ MUST be 4096 — model uses 1000+ reasoning tokens
-export const SIMPLIFICATION_MAX_TOKENS = 8192;      // Simplify needs longer output
+export const SUMMARIZATION_MAX_TOKENS = 4096;
+export const SIMPLIFICATION_MAX_TOKENS = 8192;
 
-// ── Cerebras Rate Limits ──
-// Per-model RPM/RPD per dashboard (5 RPM, 150 RPH, 2400 RPD).
-// The real bottleneck is token-per-minute (30,000/min per model).
-// The 2s inter-request gap in cerebrasRateLimiter prevents burst token exhaustion.
-export const CEREBRAS_RPM = 5;
-export const CEREBRAS_RPD = 2400;
+// ── Groq Rate Limits (openai/gpt-oss-120b) ──
+// 30 RPM, 1K RPD, 8K TPM, 200K TPD per dashboard.
+export const GROQ_RPM = 30;
+export const GROQ_RPD = 1_000;
 
 // ── Structural Filter Thresholds ──
 export const STALENESS_CUTOFF_HOURS = 30;
