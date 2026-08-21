@@ -26,7 +26,7 @@ const TIMELINE_DEDUP_THRESHOLD = 0.85;
 
 // Groq client for AI chat (openai/gpt-oss-20b)
 const groq = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY,
+  apiKey: process.env.GROQ_API_KEY || '',
   baseURL: 'https://api.groq.com/openai/v1',
 });
 

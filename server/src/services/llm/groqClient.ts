@@ -1,26 +1,28 @@
 /**
  * groqClient.ts — Groq LLM client
  *
- * Two model groups:
- *   - openai/gpt-oss-120b (Groq): Classification (batch of 5, tier A/B/C/D)
- *   - gemini-3.6-flash (Google): Summarization + Simplification (per-article)
- *
- * Groq uses OpenAI-compatible SDK with custom baseURL.
- * Summarization uses the Google GenAI SDK (already in use for embeddings).
+ * Models (via Groq OpenAI-compatible API):
+ *   - openai/gpt-oss-120b: Classification (batch of 5, tier A/B/C/D)
+ *   - openai/gpt-oss-20b: Summarization, Simplification, Story Titles, Chat
  *
  * ⚠️ Critical: Do NOT use response_format: { type: 'json_object' } for classification.
  *   openai/gpt-oss-120b returns clean JSON arrays natively.
  *   json_object mode wraps in {type:"array",items:[...]} — harder to parse.
+ *
+ * ⚠️ Reasoning model note: openai/gpt-oss-20b uses reasoning tokens internally.
+ *   max_tokens must be set high enough (≥512 for titles, ≥1024 for summaries) so that
+ *   thinking tokens don't exhaust the budget before output is generated.
  */
 
 import OpenAI from 'openai';
-import { GoogleGenAI } from '@google/genai';
 import { CLASSIFICATION_SYSTEM_PROMPT } from '../../config/classificationPrompt.js';
 import { SUMMARY_SYSTEM_PROMPT, SIMPLIFY_SYSTEM_PROMPT } from '../../config/summarizationPrompt.js';
 import {
   CLASSIFICATION_BATCH_SIZE,
   CLASSIFICATION_MODEL,
   CLASSIFICATION_TEMPERATURE,
+  SUMMARIZATION_MODEL,
+  SUMMARIZATION_TEMPERATURE,
   SUMMARIZATION_MAX_TOKENS,
   SIMPLIFICATION_MAX_TOKENS,
   GROQ_RPM,
@@ -31,42 +33,35 @@ import {
 import type { NormalizedArticle, ClassificationResult, ScoredArticle } from '../../types/index.js';
 import type { Pool } from 'pg';
 
-// ── Groq Client (classification) ──
+// ── Groq Client ──
 
-const classifier = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY,
+const groq = new OpenAI({
+  apiKey: process.env.GROQ_API_KEY || '',
   baseURL: 'https://api.groq.com/openai/v1',
 });
 
-// ── Gemini Client (summarization) ──
-
-const geminiApiKey = process.env.GEMINI_API_KEY;
-const genAI = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
-
-const GEMINI_SUMMARIZATION_MODEL = 'gemini-3.6-flash';
-
-// ── Rate Limiter (Groq classification) ──
+// ── Rate Limiter (Groq) ──
 
 class GroqRateLimiter {
-  private rpmCount: number = 0;
-  private rpdCount: number = 0;
+  private rpmCount: Map<string, number> = new Map();
+  private rpdCount: Map<string, number> = new Map();
   private minuteStart: number = Date.now();
   private lastResetDate: string = new Date().toISOString().slice(0, 10);
   private lastRequestTime: number = 0;
   private readonly RPM = GROQ_RPM;
   private readonly RPD = GROQ_RPD;
-  // With 30 RPM we can afford a tighter gap; 2s still safely avoids TPM bursts.
+  // 2s gap between requests avoids burst token exhaustion
   private readonly MIN_REQUEST_GAP_MS = 2_000;
 
   private checkDayReset(): void {
     const today = new Date().toISOString().slice(0, 10);
     if (today !== this.lastResetDate) {
-      this.rpdCount = 0;
+      this.rpdCount.clear();
       this.lastResetDate = today;
     }
   }
 
-  async waitForSlot(): Promise<void> {
+  async waitForSlot(model: string = CLASSIFICATION_MODEL): Promise<void> {
     this.checkDayReset();
 
     const gapNeeded = this.lastRequestTime + this.MIN_REQUEST_GAP_MS - Date.now();
@@ -74,18 +69,20 @@ class GroqRateLimiter {
 
     const now = Date.now();
     if (now - this.minuteStart > 60_000) {
-      this.rpmCount = 0;
+      this.rpmCount.clear();
       this.minuteStart = now;
     }
-    if (this.rpmCount >= this.RPM) {
+    const rpm = this.rpmCount.get(model) ?? 0;
+    if (rpm >= this.RPM) {
       const waitMs = this.minuteStart + 60_000 - now + 100;
       await sleep(waitMs);
-      this.rpmCount = 0;
+      this.rpmCount.set(model, 0);
       this.minuteStart = Date.now();
     }
-    if (this.rpdCount >= this.RPD) throw new Error('RPD_EXHAUSTED');
-    this.rpmCount++;
-    this.rpdCount++;
+    const rpd = this.rpdCount.get(model) ?? 0;
+    if (rpd >= this.RPD) throw new Error('RPD_EXHAUSTED');
+    this.rpmCount.set(model, rpm + 1);
+    this.rpdCount.set(model, rpd + 1);
     this.lastRequestTime = Date.now();
   }
 }
@@ -94,7 +91,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/** Singleton rate limiter used by all classification functions */
+/** Singleton rate limiter used by all Groq functions */
 export const groqRateLimiter = new GroqRateLimiter();
 
 // ── Classification (openai/gpt-oss-120b via Groq) ──
@@ -108,13 +105,13 @@ export async function classifyArticleBatch(
 ): Promise<ScoredArticle[]> {
   if (articles.length === 0) return [];
 
-  await groqRateLimiter.waitForSlot();
+  await groqRateLimiter.waitForSlot(CLASSIFICATION_MODEL);
 
   let retried = false;
 
   const attempt = async (): Promise<ScoredArticle[]> => {
     try {
-      const response = await classifier.chat.completions.create({
+      const response = await groq.chat.completions.create({
         model: CLASSIFICATION_MODEL,
         messages: [
           { role: 'system', content: CLASSIFICATION_SYSTEM_PROMPT },
@@ -122,7 +119,6 @@ export async function classifyArticleBatch(
         ],
         temperature: CLASSIFICATION_TEMPERATURE,
         // ⚠️ NO response_format — gpt-oss-120b returns clean JSON arrays natively.
-        // response_format: { type: 'json_object' } wraps in schema — DO NOT use it.
       });
 
       // Parse JSON from response
@@ -136,7 +132,7 @@ export async function classifyArticleBatch(
         // JSON parse error — retry once, then all Tier C
         if (!retried) {
           retried = true;
-          await groqRateLimiter.waitForSlot();
+          await groqRateLimiter.waitForSlot(CLASSIFICATION_MODEL);
           return attempt();
         }
         return articles.map(a => ({
@@ -188,7 +184,7 @@ export async function classifyArticleBatch(
         if (!retried) {
           retried = true;
           await sleep(5_000);
-          await groqRateLimiter.waitForSlot();
+          await groqRateLimiter.waitForSlot(CLASSIFICATION_MODEL);
           return attempt();
         }
         return articles.map(a => ({
@@ -207,7 +203,7 @@ export async function classifyArticleBatch(
   return attempt();
 }
 
-// ── Summarization (gemini-3.6-flash) ──
+// ── Summarization (openai/gpt-oss-20b via Groq) ──
 
 /**
  * Generate a 3-bullet summary for a single article.
@@ -217,24 +213,30 @@ export async function generateArticleSummary(
   title: string,
   text: string,
 ): Promise<string> {
-  if (!genAI) throw new Error('GEMINI_API_KEY not set');
-
   const MAX_RETRIES = 3;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const result = await genAI.models.generateContent({
-        model: GEMINI_SUMMARIZATION_MODEL,
-        contents: [{
-          role: 'user',
-          parts: [{ text: `${SUMMARY_SYSTEM_PROMPT}\n\nSummarize this article in exactly 3 concise bullet points:\n\nTitle: ${title}\n\n${text}` }],
-        }],
+      await groqRateLimiter.waitForSlot(SUMMARIZATION_MODEL);
+
+      const response = await groq.chat.completions.create({
+        model: SUMMARIZATION_MODEL,
+        messages: [
+          { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
+          {
+            role: 'user',
+            content: `Summarize this article in exactly 3 concise bullet points:\n\nTitle: ${title}\n\n${text}`,
+          },
+        ],
+        temperature: SUMMARIZATION_TEMPERATURE,
+        max_tokens: SUMMARIZATION_MAX_TOKENS,
       });
-      return result.text ?? '';
+
+      return response.choices[0]?.message?.content ?? '';
     } catch (err: unknown) {
-      const isRateLimit = err instanceof Error && /429|RESOURCE_EXHAUSTED/i.test(err.message);
-      if (isRateLimit && attempt < MAX_RETRIES - 1) {
+      const httpErr = err as { status?: number };
+      if (httpErr.status === 429 && attempt < MAX_RETRIES - 1) {
         const backoffMs = 15_000 * (attempt + 1);
-        console.warn(`[GROQ] Summary rate-limited for "${title.slice(0, 40)}" — retry ${attempt + 1}/${MAX_RETRIES} in ${backoffMs / 1000}s`);
+        console.warn(`[GROQ] Summary 429 for "${title.slice(0, 40)}" — retry ${attempt + 1}/${MAX_RETRIES} in ${backoffMs / 1000}s`);
         await sleep(backoffMs);
         continue;
       }
@@ -253,8 +255,6 @@ export async function simplifyArticle(
   text: string,
   dbPool: Pool,
 ): Promise<string> {
-  if (!genAI) throw new Error('GEMINI_API_KEY not set');
-
   // Check cache first
   const cached = await dbPool.query(
     'SELECT text FROM simplifications WHERE article_id = $1 AND level = $2',
@@ -265,15 +265,22 @@ export async function simplifyArticle(
   }
 
   // Generate simplification
-  const result = await genAI.models.generateContent({
-    model: GEMINI_SUMMARIZATION_MODEL,
-    contents: [{
-      role: 'user',
-      parts: [{ text: `${SIMPLIFY_SYSTEM_PROMPT}\n\nSimplify for a general reader — 2-3 paragraphs, 120-180 words, essay format, no bullet points:\n\n${text}` }],
-    }],
+  await groqRateLimiter.waitForSlot(SUMMARIZATION_MODEL);
+
+  const response = await groq.chat.completions.create({
+    model: SUMMARIZATION_MODEL,
+    messages: [
+      { role: 'system', content: SIMPLIFY_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `Simplify for a general reader — 2-3 paragraphs, 120-180 words, essay format, no bullet points:\n\n${text}`,
+      },
+    ],
+    temperature: SUMMARIZATION_TEMPERATURE,
+    max_tokens: SIMPLIFICATION_MAX_TOKENS,
   });
 
-  const simplified = result.text ?? '';
+  const simplified = response.choices[0]?.message?.content ?? '';
 
   // Cache result
   await dbPool.query(
@@ -289,7 +296,7 @@ export async function simplifyArticle(
  * Generate a concise human-readable title for a story cluster.
  *
  * Sends the titles (+ brief description excerpts) of up to 10 articles in the
- * story to gemini-3.6-flash and asks for a 4–8 word headline-style title.
+ * story to openai/gpt-oss-20b and asks for a 4–8 word headline-style title.
  *
  * Caching strategy: the title is written directly into stories.title in the DB.
  * If stories.title is already non-null this function is a no-op (title is only
@@ -303,8 +310,6 @@ export async function generateStoryTitle(
   storyId: number,
   dbPool: Pool,
 ): Promise<string | null> {
-  if (!genAI) return null;
-
   // 1. Check if a title already exists — if so, skip generation entirely
   const existing = await dbPool.query<{ title: string | null }>(
     'SELECT title FROM stories WHERE id = $1',
@@ -339,21 +344,25 @@ export async function generateStoryTitle(
     `Articles:\n${articleLines}`;
 
   try {
-    const result = await genAI.models.generateContent({
-      model: GEMINI_SUMMARIZATION_MODEL,
-      contents: [{
-        role: 'user',
-        parts: [{
-          text:
+    await groqRateLimiter.waitForSlot(SUMMARIZATION_MODEL);
+
+    const response = await groq.chat.completions.create({
+      model: SUMMARIZATION_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content:
             'You are a news editor. When given a list of article headlines from the same story cluster, ' +
             'you output a single short title (4–8 words) that best names the ongoing story. ' +
-            'No quotes, no trailing punctuation, no explanation — just the title.\n\n' +
-            userPrompt,
-        }],
-      }],
+            'No quotes, no trailing punctuation, no explanation — just the title.',
+        },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.3,
+      max_tokens: 512,
     });
 
-    const raw = (result.text ?? '').trim();
+    const raw = (response.choices[0]?.message?.content ?? '').trim();
     // Strip any accidental surrounding quotes from the LLM output
     const title = raw.replace(/^["'"""'']+|["'"""'']+$/g, '').trim();
 
@@ -371,7 +380,6 @@ export async function generateStoryTitle(
     return null;
   }
 }
-
 
 // ── Classification User Message Builder ──
 

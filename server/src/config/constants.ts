@@ -4,10 +4,10 @@ export const CLASSIFICATION_MODEL = 'openai/gpt-oss-120b';
 export const CLASSIFICATION_TEMPERATURE = 0.1;
 
 // ── Summarization ──
-export const SUMMARIZATION_MODEL = 'gemini-3.6-flash';
+export const SUMMARIZATION_MODEL = 'openai/gpt-oss-20b';
 export const SUMMARIZATION_TEMPERATURE = 0.2;
-export const SUMMARIZATION_MAX_TOKENS = 4096;
-export const SIMPLIFICATION_MAX_TOKENS = 8192;
+export const SUMMARIZATION_MAX_TOKENS = 1024;
+export const SIMPLIFICATION_MAX_TOKENS = 1536;
 
 // ── Groq Rate Limits (openai/gpt-oss-120b) ──
 // 30 RPM, 1K RPD, 8K TPM, 200K TPD per dashboard.
