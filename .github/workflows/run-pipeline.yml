@@ -2,8 +2,8 @@ name: Daily News Ingestion Pipeline
 
 on:
   schedule:
-    # 11:30 PM IST is 18:00 UTC (Thus, 17:30 UTC for 11:00 PM IST)
-    - cron: '30 17 * * *'
+    # 12:00 AM IST (Midnight) = 18:30 UTC
+    - cron: '30 18 * * *'
   workflow_dispatch:
 
 jobs:
