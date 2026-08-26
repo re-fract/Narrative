@@ -1,9 +1,14 @@
 /**
- * groqClient.ts — Groq LLM client
+ * groqClient.ts — Groq LLM client with Multi-Key Rotation
  *
  * Models (via Groq OpenAI-compatible API):
  *   - openai/gpt-oss-120b: Classification (batch of 5, tier A/B/C/D)
  *   - openai/gpt-oss-20b: Summarization, Simplification, Story Titles, Chat
+ *
+ * Key Rotation:
+ *   - Supports single GROQ_API_KEY or comma-separated GROQ_API_KEYS (key1,key2,key3)
+ *   - Round-robin dispatch across accounts
+ *   - Automatic failover to next key if a key hits rate limits (429) or daily quota limits
  *
  * ⚠️ Critical: Do NOT use response_format: { type: 'json_object' } for classification.
  *   openai/gpt-oss-120b returns clean JSON arrays natively.
@@ -33,31 +38,42 @@ import {
 import type { NormalizedArticle, ClassificationResult, ScoredArticle } from '../../types/index.js';
 import type { Pool } from 'pg';
 
-// ── Groq Client ──
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-const groq = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY || '',
-  baseURL: 'https://api.groq.com/openai/v1',
-});
+// ── Account & Pool Management ──
 
-// ── Rate Limiter (Groq) ──
-
-class GroqRateLimiter {
+export class GroqAccount {
+  public readonly key: string;
+  public readonly maskedKey: string;
+  public readonly client: OpenAI;
   private rpmCount: Map<string, number> = new Map();
   private rpdCount: Map<string, number> = new Map();
   private minuteStart: number = Date.now();
   private lastResetDate: string = new Date().toISOString().slice(0, 10);
   private lastRequestTime: number = 0;
+  public isDailyExhausted: boolean = false;
+
   private readonly RPM = GROQ_RPM;
   private readonly RPD = GROQ_RPD;
-  // 2s gap between requests avoids burst token exhaustion
   private readonly MIN_REQUEST_GAP_MS = 2_000;
+
+  constructor(apiKey: string) {
+    this.key = apiKey;
+    this.maskedKey = apiKey && apiKey.length > 8 ? `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}` : (apiKey || 'missing-key');
+    this.client = new OpenAI({
+      apiKey: apiKey || 'missing-key',
+      baseURL: 'https://api.groq.com/openai/v1',
+    });
+  }
 
   private checkDayReset(): void {
     const today = new Date().toISOString().slice(0, 10);
     if (today !== this.lastResetDate) {
       this.rpdCount.clear();
       this.lastResetDate = today;
+      this.isDailyExhausted = false;
     }
   }
 
@@ -80,19 +96,62 @@ class GroqRateLimiter {
       this.minuteStart = Date.now();
     }
     const rpd = this.rpdCount.get(model) ?? 0;
-    if (rpd >= this.RPD) throw new Error('RPD_EXHAUSTED');
+    if (rpd >= this.RPD) {
+      this.isDailyExhausted = true;
+      throw new Error('RPD_EXHAUSTED');
+    }
     this.rpmCount.set(model, rpm + 1);
     this.rpdCount.set(model, rpd + 1);
     this.lastRequestTime = Date.now();
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+export class GroqPool {
+  private accounts: GroqAccount[] = [];
+  private roundRobinIdx: number = 0;
+
+  constructor() {
+    this.reloadKeys();
+  }
+
+  public reloadKeys(): void {
+    const rawMulti = process.env.GROQ_API_KEYS;
+    const rawSingle = process.env.GROQ_API_KEY;
+    const keySet = new Set<string>();
+
+    if (rawMulti && rawMulti.trim()) {
+      rawMulti.split(',').map(k => k.trim()).filter(Boolean).forEach(k => keySet.add(k));
+    }
+    if (rawSingle && rawSingle.trim()) {
+      keySet.add(rawSingle.trim());
+    }
+
+    const keys = Array.from(keySet);
+    if (keys.length === 0) {
+      this.accounts = [new GroqAccount('')];
+    } else {
+      this.accounts = keys.map(k => new GroqAccount(k));
+    }
+  }
+
+  public getAccountCount(): number {
+    return this.accounts.length;
+  }
+
+  public getNextAccount(): GroqAccount {
+    if (this.accounts.length === 0) {
+      this.reloadKeys();
+    }
+    const available = this.accounts.filter(a => !a.isDailyExhausted);
+    const pool = available.length > 0 ? available : this.accounts;
+    const account = pool[this.roundRobinIdx % pool.length];
+    this.roundRobinIdx = (this.roundRobinIdx + 1) % pool.length;
+    return account;
+  }
 }
 
-/** Singleton rate limiter used by all Groq functions */
-export const groqRateLimiter = new GroqRateLimiter();
+/** Singleton Groq connection pool */
+export const groqPool = new GroqPool();
 
 // ── Classification (openai/gpt-oss-120b via Groq) ──
 
@@ -105,13 +164,17 @@ export async function classifyArticleBatch(
 ): Promise<ScoredArticle[]> {
   if (articles.length === 0) return [];
 
-  await groqRateLimiter.waitForSlot(CLASSIFICATION_MODEL);
-
-  let retried = false;
+  const maxRetries = Math.max(3, groqPool.getAccountCount() * 2);
+  let attemptCount = 0;
 
   const attempt = async (): Promise<ScoredArticle[]> => {
+    attemptCount++;
+    const account = groqPool.getNextAccount();
+
     try {
-      const response = await groq.chat.completions.create({
+      await account.waitForSlot(CLASSIFICATION_MODEL);
+
+      const response = await account.client.chat.completions.create({
         model: CLASSIFICATION_MODEL,
         messages: [
           { role: 'system', content: CLASSIFICATION_SYSTEM_PROMPT },
@@ -125,14 +188,11 @@ export async function classifyArticleBatch(
       let results: ClassificationResult[];
       try {
         const text = response.choices[0]?.message?.content ?? '';
-        // Handle potential markdown code fences wrapping the JSON
         const jsonStr = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
         results = JSON.parse(jsonStr);
       } catch {
-        // JSON parse error — retry once, then all Tier C
-        if (!retried) {
-          retried = true;
-          await groqRateLimiter.waitForSlot(CLASSIFICATION_MODEL);
+        if (attemptCount < maxRetries) {
+          console.warn(`[GROQ] Classification JSON parse error on ${account.maskedKey} — retry ${attemptCount}/${maxRetries}`);
           return attempt();
         }
         return articles.map(a => ({
@@ -146,6 +206,10 @@ export async function classifyArticleBatch(
 
       // Validate: must be array of same length as input
       if (!Array.isArray(results) || results.length !== articles.length) {
+        if (attemptCount < maxRetries) {
+          console.warn(`[GROQ] Classification count mismatch on ${account.maskedKey} — retry ${attemptCount}/${maxRetries}`);
+          return attempt();
+        }
         return articles.map(a => ({
           ...a,
           llmTier: 'C' as const,
@@ -171,32 +235,50 @@ export async function classifyArticleBatch(
         };
       });
     } catch (err: unknown) {
-      const httpErr = err as { status?: number };
+      const httpErr = err as { status?: number; message?: string; error?: { message?: string } };
+      const errMsg = httpErr.error?.message || httpErr.message || String(err);
 
-      // Rate limited — wait and retry
+      // Check if rate limited
       if (httpErr.status === 429) {
-        await sleep(12_000);  // Wait 12s for next RPM window
-        return attempt();
-      }
+        const isDailyLimit = /day|daily|per_day|TPD|RPD|quota exceeded/i.test(errMsg);
+        if (isDailyLimit) {
+          account.isDailyExhausted = true;
+          console.warn(`[GROQ] Daily limit reached on ${account.maskedKey}. Rotating to next key...`);
+        }
 
-      // Server error — retry once, then all Tier C
-      if (httpErr.status && httpErr.status >= 500) {
-        if (!retried) {
-          retried = true;
-          await sleep(5_000);
-          await groqRateLimiter.waitForSlot(CLASSIFICATION_MODEL);
+        if (attemptCount < maxRetries) {
+          const backoffMs = isDailyLimit ? 1000 : 5000 * attemptCount;
+          console.warn(`[GROQ] Rate limit on ${account.maskedKey} — retry with next key in ${backoffMs / 1000}s`);
+          await sleep(backoffMs);
           return attempt();
         }
+
+        console.warn(`[GROQ] All keys exhausted or retries exceeded — marking ${articles.length} articles as rejected fallback`);
         return articles.map(a => ({
           ...a,
           llmTier: 'C' as const,
           llmCategory: 'none',
-          llmReason: 'llm_server_error',
+          llmReason: 'llm_rate_limit_fallback',
           filterStatus: 'rejected' as const,
         }));
       }
 
-      throw err;
+      // Server error (5xx)
+      if (httpErr.status && httpErr.status >= 500 && attemptCount < maxRetries) {
+        const backoffMs = 3000 * attemptCount;
+        console.warn(`[GROQ] 5xx error (${httpErr.status}) on ${account.maskedKey} — retrying next key in ${backoffMs / 1000}s`);
+        await sleep(backoffMs);
+        return attempt();
+      }
+
+      console.error(`[GROQ] Classification error on ${account.maskedKey}:`, errMsg);
+      return articles.map(a => ({
+        ...a,
+        llmTier: 'C' as const,
+        llmCategory: 'none',
+        llmReason: 'llm_error_fallback',
+        filterStatus: 'rejected' as const,
+      }));
     }
   };
 
@@ -213,12 +295,13 @@ export async function generateArticleSummary(
   title: string,
   text: string,
 ): Promise<string> {
-  const MAX_RETRIES = 3;
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  const maxRetries = Math.max(3, groqPool.getAccountCount() * 2);
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const account = groqPool.getNextAccount();
     try {
-      await groqRateLimiter.waitForSlot(SUMMARIZATION_MODEL);
+      await account.waitForSlot(SUMMARIZATION_MODEL);
 
-      const response = await groq.chat.completions.create({
+      const response = await account.client.chat.completions.create({
         model: SUMMARIZATION_MODEL,
         messages: [
           { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
@@ -233,14 +316,23 @@ export async function generateArticleSummary(
 
       return response.choices[0]?.message?.content ?? '';
     } catch (err: unknown) {
-      const httpErr = err as { status?: number };
-      if (httpErr.status === 429 && attempt < MAX_RETRIES - 1) {
-        const backoffMs = 15_000 * (attempt + 1);
-        console.warn(`[GROQ] Summary 429 for "${title.slice(0, 40)}" — retry ${attempt + 1}/${MAX_RETRIES} in ${backoffMs / 1000}s`);
-        await sleep(backoffMs);
-        continue;
+      const httpErr = err as { status?: number; message?: string; error?: { message?: string } };
+      const errMsg = httpErr.error?.message || httpErr.message || String(err);
+
+      if (httpErr.status === 429) {
+        const isDaily = /day|daily|per_day|TPD|RPD|quota exceeded/i.test(errMsg);
+        if (isDaily) account.isDailyExhausted = true;
+        if (attempt < maxRetries - 1) {
+          const backoffMs = isDaily ? 1000 : 5000 * (attempt + 1);
+          console.warn(`[GROQ] Summary rate-limited on ${account.maskedKey} for "${title.slice(0, 35)}" — retry ${attempt + 1}/${maxRetries} with next key in ${backoffMs / 1000}s`);
+          await sleep(backoffMs);
+          continue;
+        }
       }
-      throw err;
+      if (attempt >= maxRetries - 1) {
+        console.error(`[GROQ] Summary failed after ${maxRetries} attempts for "${title.slice(0, 35)}":`, errMsg);
+        return '';
+      }
     }
   }
   return '';
@@ -264,10 +356,10 @@ export async function simplifyArticle(
     return cached.rows[0].text;
   }
 
-  // Generate simplification
-  await groqRateLimiter.waitForSlot(SUMMARIZATION_MODEL);
+  const account = groqPool.getNextAccount();
+  await account.waitForSlot(SUMMARIZATION_MODEL);
 
-  const response = await groq.chat.completions.create({
+  const response = await account.client.chat.completions.create({
     model: SUMMARIZATION_MODEL,
     messages: [
       { role: 'system', content: SIMPLIFY_SYSTEM_PROMPT },
@@ -344,9 +436,10 @@ export async function generateStoryTitle(
     `Articles:\n${articleLines}`;
 
   try {
-    await groqRateLimiter.waitForSlot(SUMMARIZATION_MODEL);
+    const account = groqPool.getNextAccount();
+    await account.waitForSlot(SUMMARIZATION_MODEL);
 
-    const response = await groq.chat.completions.create({
+    const response = await account.client.chat.completions.create({
       model: SUMMARIZATION_MODEL,
       messages: [
         {
@@ -387,14 +480,16 @@ export async function generateStoryTitle(
  * Build the user message for classification batches.
  * Formats articles as a numbered list with title, description, content excerpt,
  * source domain, published date, and API metadata signals.
+ *
+ * Keeps character lengths balanced to stay well within Groq's daily token limit.
  */
 export function buildClassificationUserMessage(articles: NormalizedArticle[]): string {
   const articleTexts = articles.map((a, i) => {
     const parts: string[] = [];
     parts.push(`[${i + 1}]`);
     parts.push(`Title: ${a.title}`);
-    if (a.description) parts.push(`Description: ${a.description.substring(0, 500)}`);
-    if (a.content) parts.push(`Content (excerpt): ${a.content.substring(0, 1000)}`);
+    if (a.description) parts.push(`Description: ${a.description.substring(0, 400)}`);
+    if (a.content) parts.push(`Content (excerpt): ${a.content.substring(0, 500)}`);
     parts.push(`Source: ${a.sourceDomain || 'unknown'}`);
     parts.push(`Published: ${a.publishedAt?.toISOString() || 'unknown'}`);
     const metadata = formatApiMetadata(a);

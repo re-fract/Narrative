@@ -691,8 +691,11 @@ export async function runPipeline(opts?: PipelineOptions): Promise<PipelineResul
 
     // Step 5: Classify via Groq openai/gpt-oss-120b (batch of CLASSIFICATION_BATCH_SIZE)
     const classified: ScoredArticle[] = [];
+    const totalBatches = Math.ceil(unique.length / CLASSIFICATION_BATCH_SIZE);
     for (let i = 0; i < unique.length; i += CLASSIFICATION_BATCH_SIZE) {
+      const batchNum = Math.floor(i / CLASSIFICATION_BATCH_SIZE) + 1;
       const batch = unique.slice(i, i + CLASSIFICATION_BATCH_SIZE);
+      console.log(`[PIPELINE] Classifying batch ${batchNum}/${totalBatches} (${batch.length} articles)...`);
       const batchResult = await classifyArticleBatch(batch);
       classified.push(...batchResult);
     }

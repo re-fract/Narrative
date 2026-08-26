@@ -17,18 +17,12 @@
 
 import { Router } from 'express';
 import { pool } from '../db/index.js';
-import OpenAI from 'openai';
+import { groqPool } from '../services/llm/groqClient.js';
 
 const router = Router();
 
 const TIMELINE_WINDOW_DAYS = 14;
 const TIMELINE_DEDUP_THRESHOLD = 0.85;
-
-// Groq client for AI chat (openai/gpt-oss-20b)
-const groq = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY || '',
-  baseURL: 'https://api.groq.com/openai/v1',
-});
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -238,8 +232,9 @@ router.post('/', async (req, res) => {
       { role: 'user', content: question.trim() },
     ];
 
-    // Call Groq — openai/gpt-oss-20b: 30 RPM, 8K TPM, 200K TPD
-    const response = await groq.chat.completions.create({
+    // Call Groq via connection pool
+    const account = groqPool.getNextAccount();
+    const response = await account.client.chat.completions.create({
       model: 'openai/gpt-oss-20b',
       messages,
       temperature: 0.3,
