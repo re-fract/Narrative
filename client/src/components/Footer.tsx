@@ -6,7 +6,7 @@ function Footer() {
           Narrative
         </div>
         <a
-          href="https://github.com/re-fract/Narrative"
+          href=""
           target="_blank"
           rel="noopener noreferrer"
           className="font-caption text-caption text-on-surface-variant hover:text-primary transition-colors flex items-center gap-1"
